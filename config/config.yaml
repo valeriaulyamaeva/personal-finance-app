@@ -1,6 +1,6 @@
 db:
   host: "localhost"
   port: 5432
-  user: "vale zann"
-  password: "Leruntik.2004"
+  user: "postgres"
+  password: "root"
   dbname: "finance_db"
