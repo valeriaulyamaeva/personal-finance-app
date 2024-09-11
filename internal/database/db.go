@@ -9,7 +9,6 @@ import (
 )
 
 func ConnectDB() (*pgx.Conn, error) {
-	// Загрузить переменные из .env
 	if err := godotenv.Load(); err != nil {
 		return nil, fmt.Errorf("Error loading .env file")
 	}
