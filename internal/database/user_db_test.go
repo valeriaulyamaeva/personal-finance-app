@@ -11,16 +11,20 @@ import (
 )
 
 func TestCreateUser(t *testing.T) {
-	conn, err := database.ConnectDB()
 	if err := godotenv.Load(); err != nil {
-		t.Fatalf("ошибка подключения к бд: %v", err)
+		t.Fatalf("ошибка подключения к БД: %v", err)
+	}
+	conn, err := database.ConnectDB()
+	if err != nil {
+		t.Fatalf("ошибка подключения к БД: %v", err)
 	}
 	defer conn.Close(context.Background())
 
 	user := &models.User{
-		Name:     "John Doe",
-		Email:    fmt.Sprintf("john.doe.%d@example.com", time.Now().UnixNano()),
-		Password: "securepassword",
+		Name:     "Vicky Crend",
+		Email:    fmt.Sprintf("vickycred.%d@example.com", time.Now().UnixNano()),
+		Password: "987",
+		IsAdmin:  false, // Устанавливаем значение по умолчанию для is_admin
 	}
 
 	err = database.CreateUser(conn, user)
@@ -28,74 +32,88 @@ func TestCreateUser(t *testing.T) {
 		t.Fatalf("ошибка создания пользователя: %v", err)
 	}
 
-	t.Logf("id пользователя после создания: %d", user.ID) // Логирование ID
+	t.Logf("ID пользователя после создания: %d", user.ID)
 
 	createdUser, err := database.GetUserByID(conn, user.ID)
 	if err != nil {
-		t.Fatalf("ошибка получения пользователя по d: %v", err)
+		t.Fatalf("ошибка получения пользователя по ID: %v", err)
 	}
 
-	if createdUser.Name != user.Name || createdUser.Email != user.Email {
+	if createdUser.Name != user.Name || createdUser.Email != user.Email || createdUser.IsAdmin != user.IsAdmin {
 		t.Errorf("данные пользователя не совпадают: получили %+v, хотели %+v", createdUser, user)
 	}
 }
 
 func TestUpdateUser(t *testing.T) {
-	conn, err := database.ConnectDB()
 	if err := godotenv.Load(); err != nil {
 		t.Fatalf("не удалось подгрузить .env: %v", err)
+	}
+	conn, err := database.ConnectDB()
+	if err != nil {
+		t.Fatalf("ошибка подключения к БД: %v", err)
 	}
 	defer conn.Close(context.Background())
 
 	user := &models.User{
-		Name:     "Vale Zann",
-		Email:    "vale.smith@example.com",
+		Name:     "Vale Olesik",
+		Email:    "vale.smith1111@example.com",
 		Password: "123",
+		IsAdmin:  false, // Устанавливаем значение по умолчанию для is_admin
 	}
 	err = database.CreateUser(conn, user)
 	if err != nil {
 		t.Fatalf("ошибка создания пользователя: %v", err)
 	}
 
-	user.Name = "vale new"
-	user.Email = "valenew.updated@example.com"
+	// Обновляем данные пользователя
+	user.Name = "Vale New"
+	user.Email = "valenewemail.updated@example.com"
+	user.IsAdmin = true // Изменяем статус на администратор
 	err = database.UpdateUser(conn, user)
 	if err != nil {
 		t.Fatalf("ошибка обновления пользователя: %v", err)
 	}
 
+	// Проверяем обновление
 	updatedUser, err := database.GetUserByID(conn, user.ID)
 	if err != nil {
-		t.Fatalf("не смогли получить обновленного пользователя по id: %v", err)
+		t.Fatalf("не смогли получить обновленного пользователя по ID: %v", err)
 	}
 
-	if updatedUser.Name != user.Name || updatedUser.Email != user.Email {
-		t.Errorf("данные пользователя не совпадают осле обновления: получили %+v, хотели %+v", updatedUser, user)
+	if updatedUser.Name != user.Name || updatedUser.Email != user.Email || updatedUser.IsAdmin != user.IsAdmin {
+		t.Errorf("данные пользователя не совпадают после обновления: получили %+v, хотели %+v", updatedUser, user)
 	}
 }
 
 func TestDeleteUser(t *testing.T) {
-	conn, err := database.ConnectDB()
 	if err := godotenv.Load(); err != nil {
 		t.Fatalf("не удалось подгрузить .env: %v", err)
+	}
+	conn, err := database.ConnectDB()
+	if err != nil {
+		t.Fatalf("ошибка подключения к БД: %v", err)
 	}
 	defer conn.Close(context.Background())
 
 	user := &models.User{
-		Name:     "Emily Davis",
-		Email:    "emily.davis@example.com",
+		Name:     "Emily Davisness",
+		Email:    "emily.davi1111s@example.com",
 		Password: "yetanothersecurepassword",
+		IsAdmin:  false, // Устанавливаем значение по умолчанию для is_admin
 	}
 	err = database.CreateUser(conn, user)
 	if err != nil {
 		t.Fatalf("ошибка создания пользователя: %v", err)
 	}
+
 	err = database.DeleteUser(conn, user.ID)
 	if err != nil {
 		t.Fatalf("ошибка удаления пользователя: %v", err)
 	}
+
+	// Проверяем, что пользователь удален
 	_, err = database.GetUserByID(conn, user.ID)
 	if err == nil {
-		t.Errorf("ошибка удаления пользователя по id")
+		t.Errorf("ошибка удаления пользователя по ID, пользователь все еще существует")
 	}
 }

@@ -11,7 +11,6 @@ func main() {
 	if err := godotenv.Load(); err != nil {
 		log.Fatal("Error loading .env file")
 	}
-
 	conn, err := database.ConnectDB()
 	if err != nil {
 		log.Fatal("Error connecting to database:", err)
@@ -24,4 +23,5 @@ func main() {
 	}
 
 	log.Println("Database connection established and test query successful")
+
 }

@@ -9,8 +9,12 @@ import (
 )
 
 func CreateUser(conn *pgx.Conn, user *models.User) error {
-	query := `INSERT INTO users (name, email, password) VALUES ($1, $2, $3) RETURNING id`
-	err := conn.QueryRow(context.Background(), query, user.Name, user.Email, user.Password).Scan(&user.ID)
+	query := `
+		INSERT INTO users (name, email, password, is_admin) 
+		VALUES ($1, $2, $3, $4) 
+		RETURNING id`
+	user.IsAdmin = false
+	err := conn.QueryRow(context.Background(), query, user.Name, user.Email, user.Password, user.IsAdmin).Scan(&user.ID)
 	if err != nil {
 		return fmt.Errorf("ошибка при добавлении пользователя: %v", err)
 	}
