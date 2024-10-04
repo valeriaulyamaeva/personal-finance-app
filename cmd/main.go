@@ -2,26 +2,28 @@ package main
 
 import (
 	"context"
+	"github.com/jackc/pgx/v5"
 	"github.com/joho/godotenv"
-	"github.com/valeriaulyamaeva/personal-finance-app/internal/database"
+	_ "github.com/valeriaulyamaeva/personal-finance-app/internal/database"
+	"github.com/valeriaulyamaeva/personal-finance-app/utils"
 	"log"
 )
 
 func main() {
 	if err := godotenv.Load(); err != nil {
-		log.Fatal("Error loading .env file")
+		log.Fatalf("ошибка загрузки .env файла: %v", err)
 	}
-	conn, err := database.ConnectDB()
+
+	conn, err := pgx.Connect(context.Background(), "postgres://postgres:root@localhost:5432/finance_db")
+
 	if err != nil {
-		log.Fatal("Error connecting to database:", err)
+		log.Fatalf("ошибка подключения к БД: %v", err)
 	}
 	defer conn.Close(context.Background())
 
-	_, err = conn.Query(context.Background(), "SELECT 1")
-	if err != nil {
-		log.Fatal("Error executing test query:", err)
-	}
-
-	log.Println("Database connection established and test query successful")
-
+	utils.GenerateTestTransactions(conn, 10)
+	utils.GenerateTestBudgets(conn, 10)
+	utils.GenerateTestUsers(conn, 10)
+	utils.GenerateTestCategories(conn, 10)
+	utils.GenerateTestPaymentReminders(conn, 5)
 }

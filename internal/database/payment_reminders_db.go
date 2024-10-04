@@ -16,7 +16,7 @@ func CreatePaymentReminder(conn *pgx.Conn, reminder *models.PaymentReminder) err
 
 	err := conn.QueryRow(context.Background(), query,
 		reminder.UserID,
-		reminder.Note,
+		reminder.Description,
 		reminder.DueDate).Scan(&reminder.ID)
 	if err != nil {
 		return fmt.Errorf("ошибка при добавлении напоминания: %v", err)
