@@ -5,27 +5,28 @@ import (
 	"errors"
 	"fmt"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/valeriaulyamaeva/personal-finance-app/models"
 )
 
-func CreateCategory(conn *pgx.Conn, category *models.Category) error {
+func CreateCategory(pool *pgxpool.Pool, category *models.Category) error {
+	// Log the input data for debugging purposes
+	fmt.Printf("Attempting to create category with data: UserID=%d, Name=%s, Type=%s\n", category.UserID, category.Name, category.Type)
+
 	query := `
-		INSERT INTO categories (user_id, name, type) VALUES ($1, $2, $3) RETURNING id`
+        INSERT INTO categories (user_id, name, type) VALUES ($1, $2, $3) RETURNING id`
 
-	fmt.Printf("Inserting category with UserID: %d, Name: %s, Type: %s\n", category.UserID, category.Name, category.Type)
-
-	err := conn.QueryRow(context.Background(), query, category.UserID, category.Name, category.Type).Scan(&category.ID)
+	// Execute the query and scan the returned ID
+	err := pool.QueryRow(context.Background(), query, category.UserID, category.Name, category.Type).Scan(&category.ID)
 	if err != nil {
-		fmt.Printf("Error details: %v\n", err)
+		// Log detailed error information for diagnosis
+		fmt.Printf("Error while creating category: %v\n", err)
 		return fmt.Errorf("ошибка при добавлении категории: %v", err)
 	}
-
-	fmt.Printf("Inserted category with ID: %d\n", category.ID)
 	return nil
 }
 
-func GetCategoryByID(conn *pgx.Conn, categoryID int) (*models.Category, error) {
-
+func GetCategoryByID(pool *pgxpool.Pool, categoryID int) (*models.Category, error) {
 	query := `
 		SELECT id, user_id, name, type 
 		FROM categories 
@@ -33,7 +34,7 @@ func GetCategoryByID(conn *pgx.Conn, categoryID int) (*models.Category, error) {
 
 	category := &models.Category{}
 
-	err := conn.QueryRow(context.Background(), query, categoryID).Scan(
+	err := pool.QueryRow(context.Background(), query, categoryID).Scan(
 		&category.ID,
 		&category.UserID,
 		&category.Name,
@@ -50,40 +51,48 @@ func GetCategoryByID(conn *pgx.Conn, categoryID int) (*models.Category, error) {
 	return category, nil
 }
 
-func UpdateCategory(conn *pgx.Conn, category *models.Category) error {
+func UpdateCategory(pool *pgxpool.Pool, category *models.Category) error {
 	query := `
 		UPDATE categories 
 		SET name = $1, type = $2 
 		WHERE id = $3`
 
-	fmt.Printf("Updating category with ID: %d, New Name: %s, New Type: %s\n", category.ID, category.Name, category.Type)
-
-	_, err := conn.Exec(context.Background(), query, category.Name, category.Type, category.ID)
+	_, err := pool.Exec(context.Background(), query, category.Name, category.Type, category.ID)
 	if err != nil {
 		return fmt.Errorf("ошибка обновления категории: %v", err)
 	}
-
-	fmt.Printf("Updated category with ID: %d\n", category.ID)
 	return nil
 }
 
-func DeleteCategory(conn *pgx.Conn, categoryID int) error {
-	query := `
-		DELETE FROM categories 
-		WHERE id = $1`
+func DeleteCategory(pool *pgxpool.Pool, categoryID int) error {
+	query := `DELETE FROM categories WHERE id = $1`
+	result, err := pool.Exec(context.Background(), query, categoryID)
 
-	fmt.Printf("Deleting category with ID: %d\n", categoryID)
-
-	result, err := conn.Exec(context.Background(), query, categoryID)
 	if err != nil {
-		return fmt.Errorf("ошибка удаления категории: %v", err)
+		return fmt.Errorf("ошибка при удалении категории: %w", err)
 	}
-
-	rowsAffected := result.RowsAffected()
-	if rowsAffected == 0 {
+	if result.RowsAffected() == 0 {
 		return fmt.Errorf("категория с ID %d не найдена", categoryID)
 	}
 
-	fmt.Printf("Deleted category with ID: %d\n", categoryID)
 	return nil
+}
+
+func GetAllCategories(pool *pgxpool.Pool) ([]models.Category, error) {
+	query := `SELECT id, user_id, name, type FROM categories`
+	rows, err := pool.Query(context.Background(), query)
+	if err != nil {
+		return nil, fmt.Errorf("ошибка при получении категорий: %v", err)
+	}
+	defer rows.Close()
+
+	var categories []models.Category
+	for rows.Next() {
+		var category models.Category
+		if err := rows.Scan(&category.ID, &category.UserID, &category.Name, &category.Type); err != nil {
+			return nil, err
+		}
+		categories = append(categories, category)
+	}
+	return categories, nil
 }
