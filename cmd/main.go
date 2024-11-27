@@ -500,26 +500,6 @@ func main() {
 		c.JSON(http.StatusOK, settings)
 	})
 
-	r.PUT("/usersettings/:id", func(c *gin.Context) {
-		var settings models.UserSettings
-		userID, err := strconv.Atoi(c.Param("id"))
-		if err != nil || userID <= 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Некорректный идентификатор пользователя"})
-			return
-		}
-		settings.UserID = userID
-
-		if err := c.ShouldBindJSON(&settings); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		if err := database.UpdateUserSettings(pool, &settings); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"message": "Настройки пользователя успешно обновлены"})
-	})
-
 	r.GET("/convert", func(c *gin.Context) {
 		from := c.DefaultQuery("from", "")        // Валюта для конвертации (from)
 		to := c.DefaultQuery("to", "")            // Валюта в которую конвертировать (to)
