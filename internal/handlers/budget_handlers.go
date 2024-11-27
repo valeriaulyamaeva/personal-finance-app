@@ -15,23 +15,21 @@ func CreateBudgetHandler(pool *pgxpool.Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var budget models.Budget
 		if err := json.NewDecoder(r.Body).Decode(&budget); err != nil {
-			http.Error(w, "Invalid input format", http.StatusBadRequest)
+			http.Error(w, "Некорректный формат ввода", http.StatusBadRequest)
 			log.Printf("Ошибка декодирования JSON: %v", err)
 			return
 		}
 
-		// Проверка на наличие всех необходимых полей
 		if budget.UserID == 0 || budget.CategoryID == 0 || budget.Amount <= 0 || budget.Period == "" || budget.StartDate.IsZero() || budget.EndDate.IsZero() {
-			http.Error(w, "All fields are required and must be valid", http.StatusBadRequest)
+			http.Error(w, "Все поля должны быть заполнены и корректны", http.StatusBadRequest)
 			log.Printf("Некорректные данные: %+v", budget)
 			return
 		}
 
-		// Логируем данные перед добавлением для отладки
 		log.Printf("Добавление бюджета: %+v", budget)
 
 		if err := database.CreateBudget(pool, &budget); err != nil {
-			http.Error(w, "Failed to create budget", http.StatusInternalServerError)
+			http.Error(w, "Не удалось создать бюджет", http.StatusInternalServerError)
 			log.Printf("Ошибка создания бюджета в базе данных: %v", err)
 			return
 		}
@@ -46,13 +44,13 @@ func GetBudgetHandler(pool *pgxpool.Pool) http.HandlerFunc {
 		vars := mux.Vars(r)
 		id, err := strconv.Atoi(vars["id"])
 		if err != nil {
-			http.Error(w, "Invalid budget ID", http.StatusBadRequest)
+			http.Error(w, "Некорректный ID бюджета", http.StatusBadRequest)
 			return
 		}
 
 		budget, err := database.GetBudgetByID(pool, id)
 		if err != nil {
-			http.Error(w, "Budget not found", http.StatusNotFound)
+			http.Error(w, "Бюджет не найден", http.StatusNotFound)
 			return
 		}
 
@@ -66,24 +64,24 @@ func UpdateBudgetHandler(pool *pgxpool.Pool) http.HandlerFunc {
 		vars := mux.Vars(r)
 		id, err := strconv.Atoi(vars["id"])
 		if err != nil {
-			http.Error(w, "Invalid budget ID", http.StatusBadRequest)
+			http.Error(w, "Некорректный ID бюджета", http.StatusBadRequest)
 			return
 		}
 
 		var budget models.Budget
 		if err := json.NewDecoder(r.Body).Decode(&budget); err != nil {
-			http.Error(w, "Invalid data", http.StatusBadRequest)
+			http.Error(w, "Некорректные данные", http.StatusBadRequest)
 			return
 		}
 		budget.ID = id
 
 		if err := database.UpdateBudget(pool, &budget); err != nil {
-			http.Error(w, "Failed to update budget", http.StatusInternalServerError)
+			http.Error(w, "Не удалось обновить бюджет", http.StatusInternalServerError)
 			return
 		}
 
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"message": "Budget updated successfully"})
+		json.NewEncoder(w).Encode(map[string]string{"message": "Бюджет успешно обновлён"})
 	}
 }
 
@@ -92,16 +90,16 @@ func DeleteBudgetHandler(pool *pgxpool.Pool) http.HandlerFunc {
 		vars := mux.Vars(r)
 		id, err := strconv.Atoi(vars["id"])
 		if err != nil {
-			http.Error(w, "Invalid budget ID", http.StatusBadRequest)
+			http.Error(w, "Некорректный ID бюджета", http.StatusBadRequest)
 			return
 		}
 
 		if err := database.DeleteBudget(pool, id); err != nil {
-			http.Error(w, "Failed to delete budget", http.StatusInternalServerError)
+			http.Error(w, "Не удалось удалить бюджет", http.StatusInternalServerError)
 			return
 		}
 
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"message": "Budget deleted successfully"})
+		json.NewEncoder(w).Encode(map[string]string{"message": "Бюджет успешно удалён"})
 	}
 }

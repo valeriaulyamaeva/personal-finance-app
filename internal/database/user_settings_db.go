@@ -3,75 +3,46 @@ package database
 import (
 	"context"
 	"errors"
-	"fmt"
-	"github.com/jackc/pgx/v5"
+	"log"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/valeriaulyamaeva/personal-finance-app/models"
 )
 
-func CreateUserSettings(conn *pgx.Conn, settings *models.UserSettings) error {
-	query := `
-		INSERT INTO usersettings (user_id, two_factor_enabled) 
-		VALUES ($1, $2) 
-		RETURNING id`
+func GetUserSettingsByID(pool *pgxpool.Pool, userID int) (*models.UserSettings, error) {
+	log.Printf("Получение настроек для user_id=%d", userID)
+	query := `SELECT id, user_id, two_factor_enabled, theme, notification_volume, auto_updates, weekly_reports
+              FROM usersettings WHERE user_id = $1`
 
-	err := conn.QueryRow(context.Background(), query,
-		settings.UserID,
-		settings.TwoFactorEnabled).Scan(&settings.ID)
-	if err != nil {
-		return fmt.Errorf("ошибка при добавлении настроек пользователя: %v", err)
-	}
-	return nil
-}
-
-func GetUserSettingsByID(conn *pgx.Conn, settingsID int) (*models.UserSettings, error) {
-	query := `
-		SELECT id, user_id, two_factor_enabled 
-		FROM usersettings 
-		WHERE id = $1`
-
-	settings := &models.UserSettings{}
-	err := conn.QueryRow(context.Background(), query, settingsID).Scan(
-		&settings.ID,
-		&settings.UserID,
-		&settings.TwoFactorEnabled,
+	var settings models.UserSettings
+	err := pool.QueryRow(context.Background(), query, userID).Scan(
+		&settings.ID, &settings.UserID, &settings.TwoFactorEnabled, &settings.Theme,
+		&settings.NotificationVolume, &settings.AutoUpdates, &settings.WeeklyReports,
 	)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, fmt.Errorf("настройки пользователя с ID %d не найдены", settingsID)
-		}
-		return nil, fmt.Errorf("ошибка при получении настроек пользователя: %v", err)
+		log.Printf("Ошибка получения настроек для user_id=%d: %v", userID, err)
+		return nil, errors.New("настройки пользователя не найдены")
 	}
 
-	return settings, nil
+	log.Printf("Настройки пользователя успешно получены для user_id=%d: %+v", userID, settings)
+	return &settings, nil
 }
 
-func UpdateUserSettings(conn *pgx.Conn, settings *models.UserSettings) error {
-	query := `
-		UPDATE usersettings 
-		SET two_factor_enabled = $1 
-		WHERE id = $2`
+func UpdateUserSettings(pool *pgxpool.Pool, settings *models.UserSettings) error {
+	log.Printf("Обновление настроек для user_id=%d", settings.UserID)
+	query := `UPDATE usersettings
+              SET two_factor_enabled = $1, theme = $2, notification_volume = $3, auto_updates = $4, weekly_reports = $5
+              WHERE user_id = $6`
 
-	_, err := conn.Exec(context.Background(), query,
-		settings.TwoFactorEnabled,
-		settings.ID)
+	result, err := pool.Exec(context.Background(), query,
+		settings.TwoFactorEnabled, settings.Theme, settings.NotificationVolume,
+		settings.AutoUpdates, settings.WeeklyReports, settings.UserID,
+	)
 	if err != nil {
-		return fmt.Errorf("ошибка обновления настроек пользователя: %v", err)
-	}
-	return nil
-}
-
-func DeleteUserSettings(conn *pgx.Conn, settingsID int) error {
-	query := `
-		DELETE FROM usersettings 
-		WHERE id = $1`
-
-	result, err := conn.Exec(context.Background(), query, settingsID)
-	if err != nil {
-		return fmt.Errorf("ошибка удаления настроек пользователя: %v", err)
+		log.Printf("Ошибка обновления настроек для user_id=%d: %v", settings.UserID, err)
+		return errors.New("ошибка обновления настроек пользователя")
 	}
 
-	if result.RowsAffected() == 0 {
-		return fmt.Errorf("настройки пользователя с ID %d не найдены", settingsID)
-	}
+	log.Printf("Настройки успешно обновлены для user_id=%d, изменено строк=%d", settings.UserID, result.RowsAffected())
 	return nil
 }

@@ -7,9 +7,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/valeriaulyamaeva/personal-finance-app/models"
+	"log"
+	"time"
 )
 
-// Создание транзакции с учетом поля type
 func CreateTransaction(pool *pgxpool.Pool, transaction *models.Transaction) error {
 	query := `
 		INSERT INTO transactions (user_id, category_id, amount, description, transaction_date, type) 
@@ -20,7 +21,7 @@ func CreateTransaction(pool *pgxpool.Pool, transaction *models.Transaction) erro
 		transaction.UserID,
 		transaction.CategoryID,
 		transaction.Amount,
-		transaction.Description, // Исправлено на Description
+		transaction.Description,
 		transaction.Date,
 		transaction.Type).Scan(&transaction.ID)
 	if err != nil {
@@ -29,7 +30,6 @@ func CreateTransaction(pool *pgxpool.Pool, transaction *models.Transaction) erro
 	return nil
 }
 
-// Получение транзакции по ID с учетом type
 func GetTransactionByID(pool *pgxpool.Pool, transactionID int) (*models.Transaction, error) {
 	query := `
 		SELECT id, user_id, category_id, amount, description, transaction_date, type
@@ -44,7 +44,7 @@ func GetTransactionByID(pool *pgxpool.Pool, transactionID int) (*models.Transact
 		&transaction.Amount,
 		&transaction.Description,
 		&transaction.Date,
-		&transaction.Type, // Добавлено поле type
+		&transaction.Type,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -88,7 +88,6 @@ func GetTransactionsByUserID(pool *pgxpool.Pool, userID int) ([]models.Transacti
 	return transactions, nil
 }
 
-// Получение всех транзакций с учетом type
 func GetAllTransactions(pool *pgxpool.Pool) ([]*models.Transaction, error) {
 	query := `
 		SELECT id, user_id, category_id, amount, description, transaction_date, type
@@ -110,7 +109,7 @@ func GetAllTransactions(pool *pgxpool.Pool) ([]*models.Transaction, error) {
 			&transaction.Amount,
 			&transaction.Description,
 			&transaction.Date,
-			&transaction.Type, // Добавлено поле type
+			&transaction.Type,
 		); err != nil {
 			return nil, fmt.Errorf("ошибка при сканировании транзакции: %v", err)
 		}
@@ -120,7 +119,6 @@ func GetAllTransactions(pool *pgxpool.Pool) ([]*models.Transaction, error) {
 	return transactions, nil
 }
 
-// Обновление транзакции с учетом type
 func UpdateTransaction(pool *pgxpool.Pool, transaction *models.Transaction) error {
 	query := `
 		UPDATE transactions 
@@ -132,7 +130,7 @@ func UpdateTransaction(pool *pgxpool.Pool, transaction *models.Transaction) erro
 		transaction.Amount,
 		transaction.Description,
 		transaction.Date,
-		transaction.Type, // Добавлено поле type
+		transaction.Type,
 		transaction.ID)
 	if err != nil {
 		return fmt.Errorf("ошибка обновления транзакции: %v", err)
@@ -140,7 +138,6 @@ func UpdateTransaction(pool *pgxpool.Pool, transaction *models.Transaction) erro
 	return nil
 }
 
-// Удаление транзакции
 func DeleteTransaction(pool *pgxpool.Pool, transactionID int) error {
 	query := `DELETE FROM transactions WHERE id = $1`
 
@@ -152,5 +149,68 @@ func DeleteTransaction(pool *pgxpool.Pool, transactionID int) error {
 	if result.RowsAffected() == 0 {
 		return fmt.Errorf("транзакция с ID %d не найдена", transactionID)
 	}
+	return nil
+}
+
+func MoveTransactionsToHistory(pool *pgxpool.Pool) error {
+	now := time.Now()
+	currentMonth := int(now.Month())
+	currentYear := now.Year()
+
+	tx, err := pool.Begin(context.Background())
+	if err != nil {
+		log.Printf("Ошибка начала транзакции: %v", err)
+		return err
+	}
+	defer tx.Rollback(context.Background())
+	
+	insertQuery := `
+		INSERT INTO transactionhistory (
+			user_id, category_id, amount, description, transaction_date, type, op_date, op_type, user_name
+		)
+		SELECT 
+			t.user_id, 
+			t.category_id, 
+			t.amount, 
+			t.description, 
+			t.transaction_date, 
+			t.type, 
+			NOW() AS op_date, 
+			'archived' AS op_type, 
+			u.name AS user_name
+		FROM transactions t
+		INNER JOIN users u ON t.user_id = u.id
+		WHERE EXTRACT(MONTH FROM t.transaction_date) != $1 OR EXTRACT(YEAR FROM t.transaction_date) != $2`
+
+	res, err := tx.Exec(context.Background(), insertQuery, currentMonth, currentYear)
+	if err != nil {
+		log.Printf("Ошибка переноса транзакций в transactionhistory: %v", err)
+		return err
+	}
+
+	insertedCount := res.RowsAffected()
+	log.Printf("Перенесено транзакций: %d", insertedCount)
+
+	// Удаление перенесённых транзакций
+	deleteQuery := `
+		DELETE FROM transactions
+		WHERE EXTRACT(MONTH FROM transaction_date) != $1 OR EXTRACT(YEAR FROM transaction_date) != $2`
+
+	res, err = tx.Exec(context.Background(), deleteQuery, currentMonth, currentYear)
+	if err != nil {
+		log.Printf("Ошибка удаления старых транзакций из transactions: %v", err)
+		return err
+	}
+
+	deletedCount := res.RowsAffected()
+	log.Printf("Удалено транзакций: %d", deletedCount)
+
+	// Завершаем транзакцию
+	if err := tx.Commit(context.Background()); err != nil {
+		log.Printf("Ошибка фиксации транзакции: %v", err)
+		return err
+	}
+
+	log.Println("Успешно перенесены транзакции в transactionhistory.")
 	return nil
 }

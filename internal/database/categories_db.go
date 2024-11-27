@@ -16,11 +16,9 @@ func CreateCategory(pool *pgxpool.Pool, category *models.Category) error {
 	query := `
         INSERT INTO categories (user_id, name, type) VALUES ($1, $2, $3) RETURNING id`
 
-	// Execute the query and scan the returned ID
 	err := pool.QueryRow(context.Background(), query, category.UserID, category.Name, category.Type).Scan(&category.ID)
 	if err != nil {
-		// Log detailed error information for diagnosis
-		fmt.Printf("Error while creating category: %v\n", err)
+		fmt.Printf("Ошибка при создании категории: %v\n", err)
 		return fmt.Errorf("ошибка при добавлении категории: %v", err)
 	}
 	return nil

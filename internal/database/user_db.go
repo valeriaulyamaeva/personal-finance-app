@@ -20,6 +20,15 @@ func CreateUser(pool *pgxpool.Pool, user *models.User) error {
 	if err != nil {
 		return fmt.Errorf("ошибка при добавлении пользователя: %v", err)
 	}
+
+	settingsQuery := `
+		INSERT INTO usersettings (user_id, theme, notification_volume, auto_updates, weekly_reports)
+		VALUES ($1, $2, $3, $4, $5)`
+	_, err = pool.Exec(context.Background(), settingsQuery, user.ID, "light", 50, false, false)
+	if err != nil {
+		return fmt.Errorf("ошибка при добавлении настроек пользователя: %v", err)
+	}
+
 	return nil
 }
 

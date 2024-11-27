@@ -7,6 +7,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/valeriaulyamaeva/personal-finance-app/models"
+	"time"
 )
 
 func CreateBudget(pool *pgxpool.Pool, budget *models.Budget) error {
@@ -129,15 +130,18 @@ func DeleteBudget(pool *pgxpool.Pool, budgetID int) error {
 	return nil
 }
 
-func DeductFromBudget(pool *pgxpool.Pool, categoryID int, amount float64) error {
+func DeductFromBudget(pool *pgxpool.Pool, categoryID int, amount float64, transactionDate time.Time) error {
 	query := `
 		UPDATE budgets 
 		SET remaining_amount = remaining_amount - $1
-		WHERE category_id = $2 AND remaining_amount >= $1
+		WHERE category_id = $2 
+		AND remaining_amount >= $1
+		AND $3 BETWEEN start_date AND end_date
 		RETURNING remaining_amount
 	`
+
 	var remainingAmount float64
-	err := pool.QueryRow(context.Background(), query, amount, categoryID).Scan(&remainingAmount)
+	err := pool.QueryRow(context.Background(), query, amount, categoryID, transactionDate).Scan(&remainingAmount)
 	if err != nil {
 		return fmt.Errorf("ошибка при вычитании из бюджета: %v", err)
 	}
@@ -146,5 +150,46 @@ func DeductFromBudget(pool *pgxpool.Pool, categoryID int, amount float64) error 
 		return fmt.Errorf("превышен бюджет для категории")
 	}
 
+	return nil
+}
+
+func RenewBudgetPeriod(budget *models.Budget) {
+	switch budget.Period {
+	case "monthly":
+		budget.StartDate = budget.EndDate.AddDate(0, 1, 0)
+		budget.EndDate = budget.EndDate.AddDate(0, 1, 0)
+	case "yearly":
+		budget.StartDate = budget.EndDate.AddDate(1, 0, 0)
+		budget.EndDate = budget.EndDate.AddDate(1, 0, 0)
+	}
+}
+
+func UpdateExpiredBudgets(pool *pgxpool.Pool) error {
+	query := `SELECT id, user_id, category_id, amount, remaining_amount, period, start_date, end_date FROM budgets WHERE end_date < CURRENT_DATE`
+	rows, err := pool.Query(context.Background(), query)
+	if err != nil {
+		return fmt.Errorf("ошибка при получении истекших бюджетов: %v", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var budget models.Budget
+		if err := rows.Scan(&budget.ID, &budget.UserID, &budget.CategoryID, &budget.Amount, &budget.RemainingAmount, &budget.Period, &budget.StartDate, &budget.EndDate); err != nil {
+			return fmt.Errorf("ошибка при сканировании бюджета: %v", err)
+		}
+
+		RenewBudgetPeriod(&budget)
+		budget.RemainingAmount = budget.Amount
+
+		updateQuery := `
+			UPDATE budgets 
+			SET start_date = $1, end_date = $2, remaining_amount = $3 
+			WHERE id = $4
+		`
+		_, err := pool.Exec(context.Background(), updateQuery, budget.StartDate, budget.EndDate, budget.RemainingAmount, budget.ID)
+		if err != nil {
+			return fmt.Errorf("ошибка при обновлении бюджета: %v", err)
+		}
+	}
 	return nil
 }

@@ -20,7 +20,7 @@ func CreateTransactionHandler(pool *pgxpool.Pool) http.HandlerFunc {
 
 		// Проверка бюджета перед добавлением транзакции
 		if transaction.Type == "expense" {
-			err := database.DeductFromBudget(pool, transaction.CategoryID, transaction.Amount)
+			err := database.DeductFromBudget(pool, transaction.CategoryID, transaction.Amount, transaction.Date)
 			if err != nil {
 				http.Error(w, "Failed to deduct from budget: "+err.Error(), http.StatusBadRequest)
 				return
