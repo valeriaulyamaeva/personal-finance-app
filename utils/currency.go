@@ -3,66 +3,114 @@ package utils
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"sync"
 	"time"
 )
 
 type CurrencyRate struct {
-	CurAbbreviation string  `json:"Cur_Abbreviation"`
-	CurScale        int     `json:"Cur_Scale"`
-	Rate            float64 `json:"Cur_OfficialRate"`
+	Code  string  `json:"Cur_Abbreviation"`
+	Scale int     `json:"Cur_Scale"`
+	Rate  float64 `json:"Cur_OfficialRate"`
 }
 
-// Кэш курсов валют
 var (
-	cachedRates  = make(map[string]float64)
+	cachedRates  = make(map[string]CurrencyRate)
 	cacheMutex   = sync.Mutex{}
 	lastFetch    time.Time
 	cacheTimeout = 1 * time.Hour
 	apiURL       = "https://www.nbrb.by/api/exrates/rates?periodicity=0"
 )
 
-// Получение курсов валют с кэшированием
-func GetCachedRates() (map[string]float64, error) {
+// GetCurrencyRate fetches and caches currency rates from the National Bank API
+func GetCurrencyRate(currencyCode string) (float64, error) {
 	cacheMutex.Lock()
 	defer cacheMutex.Unlock()
 
+	// Use cached data if it's still valid
 	if time.Since(lastFetch) < cacheTimeout {
-		return cachedRates, nil
+		if rate, ok := cachedRates[currencyCode]; ok {
+			log.Printf("Using cached rate for currency: %s", currencyCode)
+			return rate.Rate / float64(rate.Scale), nil
+		}
+		log.Printf("Currency %s not found in cache, refreshing rates", currencyCode)
 	}
 
-	rates, err := fetchExchangeRates()
+	// Fetch and update the cache
+	err := fetchExchangeRates()
 	if err != nil {
-		return nil, err
+		log.Printf("Failed to fetch exchange rates: %v", err)
+		return 0, err
 	}
 
-	cachedRates = rates
-	lastFetch = time.Now()
-	return rates, nil
+	rate, ok := cachedRates[currencyCode]
+	if !ok {
+		log.Printf("Currency %s not found after fetching rates", currencyCode)
+		return 0, errors.New("currency not found")
+	}
+
+	return rate.Rate / float64(rate.Scale), nil
 }
 
-// Запрос данных о валюте через API
-func fetchExchangeRates() (map[string]float64, error) {
+// fetchExchangeRates fetches rates from the National Bank API and updates the cache
+func fetchExchangeRates() error {
 	client := http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Get(apiURL)
 	if err != nil {
-		return nil, err
+		log.Printf("Error fetching rates from API: %v", err)
+		return err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, errors.New("API вернул ошибку")
+		log.Printf("API returned non-OK status: %d", resp.StatusCode)
+		return errors.New("API returned an error")
 	}
 
 	var rates []CurrencyRate
 	if err := json.NewDecoder(resp.Body).Decode(&rates); err != nil {
-		return nil, err
+		log.Printf("Error decoding API response: %v", err)
+		return err
 	}
 
-	result := make(map[string]float64)
+	// Validate and update cache
+	newCache := make(map[string]CurrencyRate)
 	for _, rate := range rates {
-		result[rate.CurAbbreviation] = rate.Rate / float64(rate.CurScale)
+		if rate.Code != "" && rate.Scale > 0 && rate.Rate > 0 {
+			newCache[rate.Code] = rate
+		} else {
+			log.Printf("Invalid rate data: %+v", rate)
+		}
 	}
-	return result, nil
+
+	if len(newCache) > 0 {
+		cachedRates = newCache
+		lastFetch = time.Now()
+		log.Println("Exchange rates cache updated successfully")
+	} else {
+		log.Println("No valid data to update cache")
+	}
+
+	return nil
+}
+
+// ConvertCurrency converts an amount from one currency to another
+func ConvertCurrency(amount float64, fromCurrency, toCurrency string) (float64, error) {
+	// Get rate for the 'from' currency
+	fromRate, err := GetCurrencyRate(fromCurrency)
+	if err != nil {
+		return 0, err
+	}
+
+	// Get rate for the 'to' currency
+	toRate, err := GetCurrencyRate(toCurrency)
+	if err != nil {
+		return 0, err
+	}
+
+	// Convert the amount
+	convertedAmount := amount * (toRate / fromRate)
+
+	return convertedAmount, nil
 }

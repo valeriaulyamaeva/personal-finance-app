@@ -55,10 +55,9 @@ func SetupRouter(pool *pgxpool.Pool) *mux.Router {
 	userSettings := r.PathPrefix("/usersettings").Subrouter()
 	userSettings.HandleFunc("/{id}", handlers.GetUserSettingsHandler(pool)).Methods("GET")
 	userSettings.HandleFunc("/{id}", handlers.UpdateUserSettingsHandler(pool)).Methods("PUT")
+	userSettings.HandleFunc("/{id}/convert", handlers.ConvertCurrencyHandler(pool)).Methods("GET")
 
-	exchangeRates := r.PathPrefix("/exchange-rates").Subrouter()
-	exchangeRates.HandleFunc("", handlers.GetExchangeRatesHandler).Methods("GET")
-	exchangeRates.HandleFunc("/{code}", handlers.GetCurrencyRateHandler).Methods("GET")
-	exchangeRates.HandleFunc("/convert", handlers.ConvertCurrencyHandler).Methods("GET")
+	r.HandleFunc("/convert/{fromCurrency}/{toCurrency}", conversionHandler).Methods("GET")
+
 	return r
 }

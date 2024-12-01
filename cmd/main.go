@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -484,60 +485,95 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"message": "Напоминание о платеже успешно удалено"})
 	})
 
+	type UpdateUserSettingsRequest struct {
+		Currency           string `json:"currency"`
+		OldCurrency        string `json:"old_currency"`
+		Theme              string `json:"theme"`
+		NotificationVolume int    `json:"notification_volume"`
+		AutoUpdates        bool   `json:"auto_updates"`
+		WeeklyReports      bool   `json:"weekly_reports"`
+	}
+
+	// Структура ответа при успешном обновлении настроек пользователя
+	type UpdateUserSettingsResponse struct {
+		Message  string              `json:"message"`
+		Settings models.UserSettings `json:"settings"`
+	}
+
 	r.GET("/usersettings/:id", func(c *gin.Context) {
+		// Получаем ID пользователя из параметра запроса
 		userID, err := strconv.Atoi(c.Param("id"))
 		if err != nil || userID <= 0 {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Некорректный или отсутствующий идентификатор пользователя"})
 			return
 		}
 
+		// Получаем настройки пользователя из базы данных
 		settings, err := database.GetUserSettingsByID(pool, userID)
 		if err != nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Настройки пользователя не найдены"})
+			if err == sql.ErrNoRows {
+				c.JSON(http.StatusNotFound, gin.H{"error": "Настройки пользователя не найдены"})
+			} else {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при извлечении настроек пользователя"})
+			}
 			return
 		}
 
+		// Отправляем настройки пользователя в ответе
 		c.JSON(http.StatusOK, settings)
 	})
 
-	r.GET("/convert", func(c *gin.Context) {
-		from := c.DefaultQuery("from", "")        // Валюта для конвертации (from)
-		to := c.DefaultQuery("to", "")            // Валюта в которую конвертировать (to)
-		amountStr := c.DefaultQuery("amount", "") // Сумма для конвертации (amount)
-
-		if from == "" || to == "" || amountStr == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Отсутствуют параметры 'from', 'to' или 'amount'"})
+	// PUT /usersettings/:id
+	r.PUT("/usersettings/:id", func(c *gin.Context) {
+		// Получаем ID пользователя из параметра запроса
+		userID, err := strconv.Atoi(c.Param("id"))
+		if err != nil || userID <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Некорректный или отсутствующий идентификатор пользователя"})
 			return
 		}
 
-		amount, err := strconv.ParseFloat(amountStr, 64)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Неверное значение 'amount'"})
+		// Чтение данных из тела запроса
+		var payload UpdateUserSettingsRequest
+		if err := c.ShouldBindJSON(&payload); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Некорректные данные"})
 			return
 		}
 
-		// Получение актуальных курсов валют
-		rates, err := getCachedRates() // Ссылка на функцию для получения актуальных курсов
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка получения курсов валют"})
+		// Проверка валидности валюты
+		validCurrencies := map[string]bool{
+			"BYN": true, "RUB": true, "PLN": true, "KRW": true,
+			"JPY": true, "USD": true, "EUR": true,
+		}
+		if payload.Currency != "" && !validCurrencies[payload.Currency] {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Неподдерживаемая валюта"})
 			return
 		}
 
-		fromRate, fromExists := rates[from]
-		toRate, toExists := rates[to]
-		if !fromExists || !toExists {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Валюта не найдена"})
+		// Если переданы пустые значения для валюты, темы или старой валюты,
+		// то можно передавать их как пустые строки, а не как NULL.
+		// Здесь предполагается, что эти поля могут быть пустыми строками.
+
+		settings := &models.UserSettings{
+			UserID:             userID,
+			Currency:           payload.Currency,
+			OldCurrency:        payload.OldCurrency,
+			Theme:              payload.Theme,
+			NotificationVolume: payload.NotificationVolume,
+			AutoUpdates:        payload.AutoUpdates,
+			WeeklyReports:      payload.WeeklyReports,
+		}
+
+		// Вызов функции для обновления настроек в базе данных
+		if err := database.UpdateUserSettings(pool, settings); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка обновления настроек пользователя"})
 			return
 		}
 
-		result := amount * (toRate / fromRate)
-		response := map[string]interface{}{
-			"from":   from,
-			"to":     to,
-			"amount": amount,
-			"result": result,
+		// Отправка успешного ответа с обновленными данными
+		response := UpdateUserSettingsResponse{
+			Message:  "Настройки успешно обновлены",
+			Settings: *settings,
 		}
-
 		c.JSON(http.StatusOK, response)
 	})
 
