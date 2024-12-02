@@ -10,6 +10,7 @@ import (
 	"github.com/robfig/cron/v3"
 	"github.com/valeriaulyamaeva/personal-finance-app/internal/database"
 	"github.com/valeriaulyamaeva/personal-finance-app/models"
+	"github.com/valeriaulyamaeva/personal-finance-app/utils"
 	"log"
 	"net/http"
 	"strconv"
@@ -549,10 +550,6 @@ func main() {
 			return
 		}
 
-		// Если переданы пустые значения для валюты, темы или старой валюты,
-		// то можно передавать их как пустые строки, а не как NULL.
-		// Здесь предполагается, что эти поля могут быть пустыми строками.
-
 		settings := &models.UserSettings{
 			UserID:             userID,
 			Currency:           payload.Currency,
@@ -575,6 +572,162 @@ func main() {
 			Settings: *settings,
 		}
 		c.JSON(http.StatusOK, response)
+	})
+
+	r.GET("/usersettings/:id/convert", func(c *gin.Context) {
+		// Получаем ID пользователя из параметра запроса
+		userID, err := strconv.Atoi(c.Param("id"))
+		if err != nil || userID <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Некорректный или отсутствующий идентификатор пользователя"})
+			return
+		}
+
+		// Получаем настройки пользователя из базы данных, передавая пул
+		settings, err := database.GetUserSettingsByID(pool, userID) // Передаем пул как аргумент
+		if err != nil {
+			// Обрабатываем ошибки получения настроек
+			if err.Error() == "настройки пользователя с ID не найдены" {
+				c.JSON(http.StatusNotFound, gin.H{"error": "Настройки пользователя не найдены"})
+			} else {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при извлечении настроек пользователя"})
+			}
+			return
+		}
+
+		// Получаем параметры запроса для конвертации
+		amountParam := c.DefaultQuery("amount", "0") // Получаем параметр "amount", если не задан — ставим 0
+		amount, err := strconv.ParseFloat(amountParam, 64)
+		if err != nil || amount <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Некорректная сумма"})
+			return
+		}
+
+		// Получаем валюты из настроек пользователя
+		fromCurrency := settings.OldCurrency // Ваша старая валюта
+		toCurrency := settings.Currency      // Текущая валюта
+
+		// Получаем курсы валют
+		fromRate, err := utils.GetCurrencyRate(fromCurrency)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Ошибка получения курса для валюты %s: %v", fromCurrency, err)})
+			return
+		}
+
+		toRate, err := utils.GetCurrencyRate(toCurrency)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Ошибка получения курса для валюты %s: %v", toCurrency, err)})
+			return
+		}
+
+		// Конвертируем сумму
+		convertedAmount := amount * (toRate / fromRate)
+
+		// Отправляем ответ с результатами
+		c.JSON(http.StatusOK, gin.H{
+			"original_amount":  amount,
+			"from_currency":    fromCurrency,
+			"to_currency":      toCurrency,
+			"converted_amount": convertedAmount,
+		})
+	})
+
+	r.POST("/goals", func(c *gin.Context) {
+		var goal models.Goal
+		if err := c.ShouldBindJSON(&goal); err != nil {
+			log.Printf("Ошибка привязки JSON: %v", err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Некорректный ввод данных"})
+			return
+		}
+		log.Printf("Полученные данные для создания цели: %+v", goal)
+
+		if err := database.CreateGoal(pool, &goal); err != nil {
+			log.Printf("Ошибка при создании цели: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при создании цели"})
+			return
+		}
+		c.JSON(http.StatusCreated, goal)
+	})
+
+	// Получение списка целей по user_id
+	r.GET("/goals", func(c *gin.Context) {
+		userID, err := strconv.Atoi(c.DefaultQuery("user_id", "0"))
+		if err != nil || userID == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Некорректный идентификатор пользователя"})
+			return
+		}
+
+		goals, err := database.GetGoalsByUserID(pool, userID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при получении списка целей"})
+			return
+		}
+		c.JSON(http.StatusOK, goals)
+	})
+
+	// Обновление существующей цели
+	r.PUT("/goals/:id", func(c *gin.Context) {
+		var goal models.Goal
+		id, err := strconv.Atoi(c.Param("id"))
+		if err != nil {
+			log.Printf("Некорректный идентификатор цели: %v", err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Некорректный идентификатор цели"})
+			return
+		}
+
+		if err := c.ShouldBindJSON(&goal); err != nil {
+			log.Printf("Ошибка привязки JSON: %v", err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Некорректный ввод данных"})
+			return
+		}
+
+		goal.ID = id
+		log.Printf("Обновляем цель с данными: %+v", goal)
+
+		if err := database.UpdateGoal(pool, &goal); err != nil {
+			log.Printf("Ошибка обновления цели: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при обновлении цели"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"message": "Цель успешно обновлена"})
+	})
+
+	// Удаление цели
+	r.DELETE("/goals/:id", func(c *gin.Context) {
+		id, err := strconv.Atoi(c.Param("id"))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Некорректный идентификатор цели"})
+			return
+		}
+
+		if err := database.DeleteGoal(pool, id); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при удалении цели"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"message": "Цель успешно удалена"})
+	})
+
+	// Добавление прогресса к цели
+	r.PATCH("/goals/:id/progress", func(c *gin.Context) {
+		var progressData models.Progress
+		id, err := strconv.Atoi(c.Param("id"))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Некорректный идентификатор цели"})
+			return
+		}
+
+		if err := c.ShouldBindJSON(&progressData); err != nil {
+			log.Printf("Ошибка привязки JSON: %v", err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Некорректный формат данных прогресса"})
+			return
+		}
+
+		if err := database.AddProgressToGoal(pool, id, &progressData); err != nil {
+			log.Printf("Ошибка при добавлении прогресса: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при добавлении прогресса"})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"message": "Прогресс успешно обновлен"})
 	})
 
 	if err := r.Run(":8080"); err != nil {

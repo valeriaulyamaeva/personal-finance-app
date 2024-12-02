@@ -3,13 +3,13 @@ module github.com/valeriaulyamaeva/personal-finance-app
 go 1.23.1
 
 require (
-	github.com/brianvoe/gofakeit/v6 v6.28.0
 	github.com/gin-gonic/gin v1.10.0
 	github.com/goccy/go-json v0.10.2
 	github.com/gorilla/mux v1.8.1
 	github.com/jackc/pgx/v5 v5.7.1
 	github.com/joho/godotenv v1.5.1
 	github.com/robfig/cron/v3 v3.0.1
+	github.com/shopspring/decimal v1.4.0
 	golang.org/x/crypto v0.28.0
 	golang.org/x/net v0.25.0
 )

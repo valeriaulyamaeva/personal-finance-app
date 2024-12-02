@@ -10,9 +10,8 @@ import (
 )
 
 type CurrencyRate struct {
-	Code  string  `json:"Cur_Abbreviation"`
-	Scale int     `json:"Cur_Scale"`
-	Rate  float64 `json:"Cur_OfficialRate"`
+	Code string  `json:"currency"`
+	Rate float64 `json:"rate"`
 }
 
 var (
@@ -20,10 +19,11 @@ var (
 	cacheMutex   = sync.Mutex{}
 	lastFetch    time.Time
 	cacheTimeout = 1 * time.Hour
-	apiURL       = "https://www.nbrb.by/api/exrates/rates?periodicity=0"
+	apiURL       = "https://openexchangerates.org/api/latest.json"
+	apiKey       = "YOUR_API_KEY" // Ваш API ключ
 )
 
-// GetCurrencyRate fetches and caches currency rates from the National Bank API
+// GetCurrencyRate fetches and caches currency rates from Open Exchange Rates API
 func GetCurrencyRate(currencyCode string) (float64, error) {
 	cacheMutex.Lock()
 	defer cacheMutex.Unlock()
@@ -32,14 +32,13 @@ func GetCurrencyRate(currencyCode string) (float64, error) {
 	if time.Since(lastFetch) < cacheTimeout {
 		if rate, ok := cachedRates[currencyCode]; ok {
 			log.Printf("Using cached rate for currency: %s", currencyCode)
-			return rate.Rate / float64(rate.Scale), nil
+			return rate.Rate, nil
 		}
 		log.Printf("Currency %s not found in cache, refreshing rates", currencyCode)
 	}
 
 	// Fetch and update the cache
-	err := fetchExchangeRates()
-	if err != nil {
+	if err := fetchExchangeRates(); err != nil {
 		log.Printf("Failed to fetch exchange rates: %v", err)
 		return 0, err
 	}
@@ -50,13 +49,14 @@ func GetCurrencyRate(currencyCode string) (float64, error) {
 		return 0, errors.New("currency not found")
 	}
 
-	return rate.Rate / float64(rate.Scale), nil
+	return rate.Rate, nil
 }
 
-// fetchExchangeRates fetches rates from the National Bank API and updates the cache
+// fetchExchangeRates fetches rates from Open Exchange Rates API and updates the cache
 func fetchExchangeRates() error {
 	client := http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(apiURL)
+	url := apiURL + "?app_id=" + apiKey
+	resp, err := client.Get(url)
 	if err != nil {
 		log.Printf("Error fetching rates from API: %v", err)
 		return err
@@ -68,22 +68,25 @@ func fetchExchangeRates() error {
 		return errors.New("API returned an error")
 	}
 
-	var rates []CurrencyRate
-	if err := json.NewDecoder(resp.Body).Decode(&rates); err != nil {
+	var response struct {
+		Rates map[string]float64 `json:"rates"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
 		log.Printf("Error decoding API response: %v", err)
 		return err
 	}
 
 	// Validate and update cache
 	newCache := make(map[string]CurrencyRate)
-	for _, rate := range rates {
-		if rate.Code != "" && rate.Scale > 0 && rate.Rate > 0 {
-			newCache[rate.Code] = rate
+	for code, rate := range response.Rates {
+		if rate > 0 {
+			newCache[code] = CurrencyRate{Code: code, Rate: rate}
 		} else {
-			log.Printf("Invalid rate data: %+v", rate)
+			log.Printf("Invalid rate for currency: %s", code)
 		}
 	}
 
+	// Only update the cache if we have valid data
 	if len(newCache) > 0 {
 		cachedRates = newCache
 		lastFetch = time.Now()
@@ -97,20 +100,46 @@ func fetchExchangeRates() error {
 
 // ConvertCurrency converts an amount from one currency to another
 func ConvertCurrency(amount float64, fromCurrency, toCurrency string) (float64, error) {
-	// Get rate for the 'from' currency
-	fromRate, err := GetCurrencyRate(fromCurrency)
-	if err != nil {
+	// Fetch rates concurrently
+	fromRateChan := make(chan float64)
+	toRateChan := make(chan float64)
+	errChan := make(chan error, 2)
+
+	// Fetch rate for 'from' currency
+	go func() {
+		fromRate, err := GetCurrencyRate(fromCurrency)
+		if err != nil {
+			errChan <- err
+			return
+		}
+		fromRateChan <- fromRate
+	}()
+
+	// Fetch rate for 'to' currency
+	go func() {
+		toRate, err := GetCurrencyRate(toCurrency)
+		if err != nil {
+			errChan <- err
+			return
+		}
+		toRateChan <- toRate
+	}()
+
+	// Wait for both responses
+	var fromRate, toRate float64
+	select {
+	case fromRate = <-fromRateChan:
+	case err := <-errChan:
 		return 0, err
 	}
 
-	// Get rate for the 'to' currency
-	toRate, err := GetCurrencyRate(toCurrency)
-	if err != nil {
+	select {
+	case toRate = <-toRateChan:
+	case err := <-errChan:
 		return 0, err
 	}
 
 	// Convert the amount
 	convertedAmount := amount * (toRate / fromRate)
-
 	return convertedAmount, nil
 }

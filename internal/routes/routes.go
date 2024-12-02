@@ -57,7 +57,14 @@ func SetupRouter(pool *pgxpool.Pool) *mux.Router {
 	userSettings.HandleFunc("/{id}", handlers.UpdateUserSettingsHandler(pool)).Methods("PUT")
 	userSettings.HandleFunc("/{id}/convert", handlers.ConvertCurrencyHandler(pool)).Methods("GET")
 
-	r.HandleFunc("/convert/{fromCurrency}/{toCurrency}", conversionHandler).Methods("GET")
+	r.HandleFunc("/{id}/convert", handlers.ConvertCurrencyHandler(pool)).Methods("GET")
+
+	goals := r.PathPrefix("/api/goals").Subrouter()
+	goals.HandleFunc("", handlers.CreateGoalHandler(pool)).Methods("POST")
+	goals.HandleFunc("/{id:[0-9]+}", handlers.GetGoalHandler(pool)).Methods("GET")
+	goals.HandleFunc("/{id:[0-9]+}", handlers.UpdateGoalHandler(pool)).Methods("PUT")
+	goals.HandleFunc("/{id:[0-9]+}", handlers.DeleteGoalHandler(pool)).Methods("DELETE")
+	goals.HandleFunc("/{id:[0-9]+}/progress", handlers.AddProgressToGoalHandler(pool)).Methods("PATCH")
 
 	return r
 }
