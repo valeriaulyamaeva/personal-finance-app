@@ -12,9 +12,10 @@ import (
 )
 
 func CreateTransaction(pool *pgxpool.Pool, transaction *models.Transaction) error {
+	// Начинаем с создания транзакции
 	query := `
-		INSERT INTO transactions (user_id, category_id, amount, description, transaction_date, type) 
-		VALUES ($1, $2, $3, $4, $5, $6) 
+		INSERT INTO transactions (user_id, category_id, amount, description, transaction_date, type, goal_id) 
+		VALUES ($1, $2, $3, $4, $5, $6, $7) 
 		RETURNING id`
 
 	err := pool.QueryRow(context.Background(), query,
@@ -23,10 +24,21 @@ func CreateTransaction(pool *pgxpool.Pool, transaction *models.Transaction) erro
 		transaction.Amount,
 		transaction.Description,
 		transaction.Date,
-		transaction.Type).Scan(&transaction.ID)
+		transaction.Type,
+		transaction.GoalID).Scan(&transaction.ID)
 	if err != nil {
 		return fmt.Errorf("ошибка при добавлении транзакции: %v", err)
 	}
+
+	// Если транзакция привязана к цели, обновляем баланс этой цели
+	if transaction.Type == "goal" && transaction.GoalID != nil {
+		// Обновляем баланс цели (расход или доход)
+		err := updateGoalBalance(pool, *transaction.GoalID, transaction.Amount, transaction.Type)
+		if err != nil {
+			return fmt.Errorf("ошибка при обновлении баланса цели: %v", err)
+		}
+	}
+
 	return nil
 }
 
@@ -163,7 +175,7 @@ func MoveTransactionsToHistory(pool *pgxpool.Pool) error {
 		return err
 	}
 	defer tx.Rollback(context.Background())
-	
+
 	insertQuery := `
 		INSERT INTO transactionhistory (
 			user_id, category_id, amount, description, transaction_date, type, op_date, op_type, user_name
@@ -212,5 +224,48 @@ func MoveTransactionsToHistory(pool *pgxpool.Pool) error {
 	}
 
 	log.Println("Успешно перенесены транзакции в transactionhistory.")
+	return nil
+}
+
+func updateGoalBalance(pool *pgxpool.Pool, goalID int, amount float64, transactionType string) error {
+	var newBalance float64
+	var currentAmount float64
+	var targetAmount float64
+	var goalStatus string
+
+	// Получаем текущие данные о цели
+	selectQuery := `SELECT current_amount, amount, status FROM goals WHERE id = $1`
+	err := pool.QueryRow(context.Background(), selectQuery, goalID).Scan(&currentAmount, &targetAmount, &goalStatus)
+	if err != nil {
+		return fmt.Errorf("ошибка при получении данных цели: %v", err)
+	}
+
+	// Если транзакция типа "expense", уменьшаем баланс цели
+	if transactionType == "expense" {
+		newBalance = currentAmount - amount
+	} else if transactionType == "income" {
+		// Если транзакция типа "income", увеличиваем баланс цели
+		newBalance = currentAmount + amount
+	} else {
+		return fmt.Errorf("неизвестный тип транзакции: %s", transactionType)
+	}
+
+	// Обновляем баланс цели
+	updateQuery := `UPDATE goals SET current_amount = $1 WHERE id = $2`
+	_, err = pool.Exec(context.Background(), updateQuery, newBalance, goalID)
+	if err != nil {
+		return fmt.Errorf("ошибка при обновлении баланса цели: %v", err)
+	}
+
+	// Проверка достижения цели
+	if newBalance >= targetAmount && goalStatus != "completed" {
+		// Цель достигнута
+		updateStatusQuery := `UPDATE goals SET status = 'completed' WHERE id = $1`
+		_, err := pool.Exec(context.Background(), updateStatusQuery, goalID)
+		if err != nil {
+			return fmt.Errorf("ошибка при обновлении статуса цели на 'completed': %v", err)
+		}
+	}
+
 	return nil
 }

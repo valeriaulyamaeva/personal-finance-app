@@ -22,7 +22,8 @@ func CreateGoalHandler(pool *pgxpool.Pool) http.HandlerFunc {
 			return
 		}
 
-		if goal.UserID == 0 || goal.Amount <= 0 || goal.Name == "" || goal.Deadline.IsZero() || goal.CreatedAt.IsZero() {
+		// Проверка на корректность обязательных полей
+		if goal.UserID == 0 || goal.Amount <= 0 || goal.Name == "" || goal.TargetDate.IsZero() || goal.CreatedAt.IsZero() {
 			http.Error(w, "Все поля должны быть заполнены и корректны", http.StatusBadRequest)
 			log.Printf("Некорректные данные: %+v", goal)
 			return
@@ -160,5 +161,46 @@ func AddProgressToGoalHandler(pool *pgxpool.Pool) http.HandlerFunc {
 
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]string{"message": "Прогресс успешно добавлен"})
+	}
+}
+
+// AddMoneyToGoalHandler добавляет деньги в цель
+func AddMoneyToGoalHandler(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		vars := mux.Vars(r)
+		id, err := strconv.Atoi(vars["id"])
+		if err != nil {
+			http.Error(w, "Некорректный ID цели", http.StatusBadRequest)
+			return
+		}
+
+		var progressData struct {
+			Amount float64 `json:"amount"`
+		}
+
+		// Декодируем данные
+		if err := json.NewDecoder(r.Body).Decode(&progressData); err != nil {
+			http.Error(w, "Некорректные данные", http.StatusBadRequest)
+			return
+		}
+
+		// Преобразуем количество денег в decimal.Decimal
+		amount := decimal.NewFromFloat(progressData.Amount)
+
+		// Убедимся, что сумма больше нуля
+		if amount.LessThanOrEqual(decimal.Zero) {
+			http.Error(w, "Сумма должна быть больше нуля", http.StatusBadRequest)
+			return
+		}
+
+		// Добавляем деньги к цели
+		if err := database.AddProgressToGoal(pool, id, amount); err != nil {
+			http.Error(w, "Не удалось добавить деньги", http.StatusInternalServerError)
+			return
+		}
+
+		// Возвращаем успешный ответ
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"message": "Деньги успешно добавлены к цели"})
 	}
 }

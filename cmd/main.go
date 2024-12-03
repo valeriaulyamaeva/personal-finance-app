@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 	"github.com/robfig/cron/v3"
+	"github.com/shopspring/decimal"
 	"github.com/valeriaulyamaeva/personal-finance-app/internal/database"
 	"github.com/valeriaulyamaeva/personal-finance-app/models"
 	"github.com/valeriaulyamaeva/personal-finance-app/utils"
@@ -640,6 +641,13 @@ func main() {
 		}
 		log.Printf("Полученные данные для создания цели: %+v", goal)
 
+		// Проверка существования пользователя
+		if goal.UserID == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Не указан ID пользователя"})
+			return
+		}
+
+		// Создание цели
 		if err := database.CreateGoal(pool, &goal); err != nil {
 			log.Printf("Ошибка при создании цели: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при создании цели"})
@@ -656,7 +664,7 @@ func main() {
 			return
 		}
 
-		goals, err := database.GetGoalsByUserID(pool, userID)
+		goals, err := database.GetAllGoals(pool, userID) // Используем GetAllGoals
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при получении списка целей"})
 			return
@@ -706,24 +714,34 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"message": "Цель успешно удалена"})
 	})
 
-	// Добавление прогресса к цели
 	r.PATCH("/goals/:id/progress", func(c *gin.Context) {
-		var progressData models.Progress
 		id, err := strconv.Atoi(c.Param("id"))
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Некорректный идентификатор цели"})
 			return
 		}
 
-		if err := c.ShouldBindJSON(&progressData); err != nil {
+		var progress struct {
+			Amount decimal.Decimal `json:"amount"` // Сумма прогресса в формате decimal
+		}
+
+		// Привязка данных из JSON тела запроса
+		if err := c.ShouldBindJSON(&progress); err != nil {
 			log.Printf("Ошибка привязки JSON: %v", err)
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Некорректный формат данных прогресса"})
 			return
 		}
 
-		if err := database.AddProgressToGoal(pool, id, &progressData); err != nil {
-			log.Printf("Ошибка при добавлении прогресса: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при добавлении прогресса"})
+		// Проверка на положительность прогресса
+		if progress.Amount.LessThanOrEqual(decimal.Zero) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Прогресс должен быть положительным числом"})
+			return
+		}
+
+		// Обновление текущего прогресса цели в базе данных
+		if err := database.UpdateGoalProgress(pool, id, progress.Amount); err != nil {
+			log.Printf("Ошибка при обновлении прогресса: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при обновлении прогресса"})
 			return
 		}
 

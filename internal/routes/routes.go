@@ -61,10 +61,12 @@ func SetupRouter(pool *pgxpool.Pool) *mux.Router {
 
 	goals := r.PathPrefix("/api/goals").Subrouter()
 	goals.HandleFunc("", handlers.CreateGoalHandler(pool)).Methods("POST")
+	goals.HandleFunc("/user/{user_id:[0-9]+}", handlers.GetAllGoalsHandler(pool)).Methods("GET")
 	goals.HandleFunc("/{id:[0-9]+}", handlers.GetGoalHandler(pool)).Methods("GET")
 	goals.HandleFunc("/{id:[0-9]+}", handlers.UpdateGoalHandler(pool)).Methods("PUT")
 	goals.HandleFunc("/{id:[0-9]+}", handlers.DeleteGoalHandler(pool)).Methods("DELETE")
 	goals.HandleFunc("/{id:[0-9]+}/progress", handlers.AddProgressToGoalHandler(pool)).Methods("PATCH")
+	goals.HandleFunc("/{id:[0-9]+}/add_money", handlers.AddMoneyToGoalHandler(pool)).Methods("POST")
 
 	return r
 }
