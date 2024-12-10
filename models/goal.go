@@ -1,7 +1,6 @@
 package models
 
 import (
-	"fmt"
 	"time"
 )
 
@@ -14,18 +13,9 @@ type Goal struct {
 	Name          string    `json:"name" db:"name"`
 	CreatedAt     time.Time `json:"created_at" db:"created_at"`
 	Status        string    `json:"status" db:"status"`
+	Currency      string    `json:"currency" db:"currency"`
 }
 
 func (g *Goal) RemainingAmount() float64 {
 	return g.Amount - g.CurrentAmount
-}
-
-// Обновляет статус цели, если она достигнута
-func (g *Goal) UpdateGoalStatus() error {
-	if g.CurrentAmount >= g.Amount {
-		// Если цель достигнута, обновляем статус
-		g.Status = "completed"
-		return nil
-	}
-	return fmt.Errorf("цель не достигнута, еще необходимо %f", g.RemainingAmount())
 }

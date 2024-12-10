@@ -15,6 +15,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"sync"
 )
 
 func ScheduleBudgetRenewal(pool *pgxpool.Pool) {
@@ -45,21 +46,111 @@ func ScheduleTransactionArchival(pool *pgxpool.Pool) {
 
 func CORSMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Получаем исходный домен из заголовка
 		origin := c.Request.Header.Get("Origin")
-		if origin == "http://localhost:3000" || origin == "http://localhost:3001" {
-			c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
+
+		// Должны быть проверены только разрешенные домены
+		allowedOrigins := []string{"http://localhost:3000", "http://localhost:3001"} // можно добавить новые домены
+
+		// Если Origin совпадает с разрешенным, устанавливаем Access-Control-Allow-Origin
+		for _, allowedOrigin := range allowedOrigins {
+			if origin == allowedOrigin {
+				c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
+				break
+			}
 		}
+
+		// Разрешаем отправку cookies и аутентификацию
 		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
 		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE")
 
+		// Браузеры посылают preflight запросы типа OPTIONS, и нужно на них ответить
 		if c.Request.Method == "OPTIONS" {
-			c.AbortWithStatus(200)
+			c.Writer.Header().Set("Access-Control-Max-Age", "86400") // Кэширование CORS на 1 день
+			c.AbortWithStatus(http.StatusOK)
 			return
 		}
 
+		// Продолжаем обработку запроса
 		c.Next()
 	}
+}
+
+func convertAllDataToNewCurrency(pool *pgxpool.Pool, userID int, oldCurrency string, newCurrency string) error {
+	// Получаем курсы валют для конвертации
+	fromRate, errFromRate := utils.GetCurrencyRate(oldCurrency)
+	toRate, errToRate := utils.GetCurrencyRate(newCurrency)
+
+	log.Printf("Получаем курсы для валют: %s -> %s, fromRate: %v, toRate: %v", oldCurrency, newCurrency, fromRate, toRate)
+
+	if errFromRate != nil || errToRate != nil {
+		log.Printf("Ошибка при получении курсов валют: %v, %v", errFromRate, errToRate)
+		return fmt.Errorf("ошибка при получении курсов валют: %v, %v", errFromRate, errToRate)
+	}
+
+	conversionRate := toRate / fromRate
+	log.Printf("Конвертационный курс: %.4f", conversionRate)
+
+	// Конвертируем бюджеты
+	budgets, err := database.GetBudgetsByUserID(pool, userID)
+	if err != nil {
+		log.Printf("Ошибка при получении бюджета для пользователя с ID %d: %v", userID, err)
+		return fmt.Errorf("ошибка при получении бюджета для пользователя с ID %d: %v", userID, err)
+	}
+
+	for _, budget := range budgets {
+		if budget.Currency != newCurrency {
+			convertedAmount := budget.Amount * conversionRate
+			log.Printf("Конвертация бюджета с ID %d: %.2f -> %.2f %s", budget.ID, budget.Amount, convertedAmount, newCurrency)
+			budget.Amount = convertedAmount
+			budget.Currency = newCurrency
+			if err := database.UpdateBudget(pool, &budget); err != nil {
+				log.Printf("Ошибка при обновлении бюджета с ID %d: %v", budget.ID, err)
+				return fmt.Errorf("ошибка при обновлении бюджета с ID %d: %v", budget.ID, err)
+			}
+		}
+	}
+
+	// Конвертируем транзакции
+	transactions, err := database.GetTransactionsByUserID(pool, userID)
+	if err != nil {
+		log.Printf("Ошибка при получении транзакций для пользователя с ID %d: %v", userID, err)
+		return fmt.Errorf("ошибка при получении транзакций для пользователя с ID %d: %v", userID, err)
+	}
+
+	for _, transaction := range transactions {
+		if transaction.Currency != newCurrency {
+			convertedAmount := transaction.Amount * conversionRate
+			log.Printf("Конвертация транзакции с ID %d: %.2f -> %.2f %s", transaction.ID, transaction.Amount, convertedAmount, newCurrency)
+			transaction.Amount = convertedAmount
+			transaction.Currency = newCurrency
+			if err := database.UpdateTransaction(pool, &transaction); err != nil {
+				log.Printf("Ошибка при обновлении транзакции с ID %d: %v", transaction.ID, err)
+				return fmt.Errorf("ошибка при обновлении транзакции с ID %d: %v", transaction.ID, err)
+			}
+		}
+	}
+
+	// Конвертируем цель
+	goal, err := database.GetGoalByID(pool, userID)
+	if err != nil {
+		log.Printf("Ошибка при получении цели для пользователя с ID %d: %v", userID, err)
+		return fmt.Errorf("ошибка при получении цели для пользователя с ID %d: %v", userID, err)
+	}
+
+	if goal.Currency != newCurrency {
+		convertedAmount := goal.Amount * conversionRate
+		log.Printf("Конвертация цели с ID %d: %.2f -> %.2f %s", goal.ID, goal.Amount, convertedAmount, newCurrency)
+		goal.Amount = convertedAmount
+		goal.Currency = newCurrency
+		if err := database.UpdateGoal(pool, goal); err != nil {
+			log.Printf("Ошибка при обновлении цели с ID %d: %v", goal.ID, err)
+			return fmt.Errorf("ошибка при обновлении цели с ID %d: %v", goal.ID, err)
+		}
+	}
+
+	return nil
 }
 
 func main() {
@@ -256,6 +347,7 @@ func main() {
 		var transaction models.Transaction
 		log.Printf("Необработанные данные транзакции: %v", c.Request.Body)
 
+		// Привязка JSON данных к структуре
 		if err := c.ShouldBindJSON(&transaction); err != nil {
 			log.Printf("Ошибка привязки JSON: %v", err)
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Некорректный ввод", "details": err.Error()})
@@ -264,11 +356,26 @@ func main() {
 
 		log.Printf("Полученные данные для создания транзакции: %+v", transaction)
 
+		// Проверка типа транзакции и наличие GoalID
+		if transaction.Type == "goal" && transaction.GoalID != nil && *transaction.GoalID != 0 {
+			// Преобразование float64 в decimal.Decimal
+			amountDecimal := decimal.NewFromFloat(transaction.Amount)
+
+			// Обновление прогресса цели
+			if err := database.UpdateGoalProgress(pool, *transaction.GoalID, amountDecimal); err != nil {
+				log.Printf("Ошибка при обновлении прогресса для цели %d: %v", *transaction.GoalID, err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при обновлении прогресса цели"})
+				return
+			}
+		}
+
+		// Создание транзакции в базе данных
 		if err := database.CreateTransaction(pool, &transaction); err != nil {
 			log.Printf("Ошибка при создании транзакции: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка создания транзакции"})
 			return
 		}
+
 		c.JSON(http.StatusCreated, transaction)
 	})
 
@@ -487,21 +594,6 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"message": "Напоминание о платеже успешно удалено"})
 	})
 
-	type UpdateUserSettingsRequest struct {
-		Currency           string `json:"currency"`
-		OldCurrency        string `json:"old_currency"`
-		Theme              string `json:"theme"`
-		NotificationVolume int    `json:"notification_volume"`
-		AutoUpdates        bool   `json:"auto_updates"`
-		WeeklyReports      bool   `json:"weekly_reports"`
-	}
-
-	// Структура ответа при успешном обновлении настроек пользователя
-	type UpdateUserSettingsResponse struct {
-		Message  string              `json:"message"`
-		Settings models.UserSettings `json:"settings"`
-	}
-
 	r.GET("/usersettings/:id", func(c *gin.Context) {
 		// Получаем ID пользователя из параметра запроса
 		userID, err := strconv.Atoi(c.Param("id"))
@@ -525,54 +617,64 @@ func main() {
 		c.JSON(http.StatusOK, settings)
 	})
 
-	// PUT /usersettings/:id
 	r.PUT("/usersettings/:id", func(c *gin.Context) {
 		// Получаем ID пользователя из параметра запроса
 		userID, err := strconv.Atoi(c.Param("id"))
 		if err != nil || userID <= 0 {
+			log.Printf("Некорректный или отсутствующий идентификатор пользователя: %v", err)
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Некорректный или отсутствующий идентификатор пользователя"})
 			return
 		}
 
-		// Чтение данных из тела запроса
-		var payload UpdateUserSettingsRequest
-		if err := c.ShouldBindJSON(&payload); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Некорректные данные"})
+		// Создаем структуру для хранения обновленных настроек пользователя
+		var settings models.UserSettings
+		if err := c.ShouldBindJSON(&settings); err != nil {
+			log.Printf("Ошибка при привязке данных: %v", err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Некорректный формат данных"})
 			return
 		}
 
-		// Проверка валидности валюты
-		validCurrencies := map[string]bool{
-			"BYN": true, "RUB": true, "PLN": true, "KRW": true,
-			"JPY": true, "USD": true, "EUR": true,
-		}
-		if payload.Currency != "" && !validCurrencies[payload.Currency] {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Неподдерживаемая валюта"})
+		// Убедимся, что ID из URL совпадает с ID в теле запроса
+		if settings.UserID != userID {
+			log.Printf("ID пользователя в URL не совпадает с ID в теле запроса: %d != %d", userID, settings.UserID)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "ID пользователя в URL не совпадает с ID в теле запроса"})
 			return
 		}
 
-		settings := &models.UserSettings{
-			UserID:             userID,
-			Currency:           payload.Currency,
-			OldCurrency:        payload.OldCurrency,
-			Theme:              payload.Theme,
-			NotificationVolume: payload.NotificationVolume,
-			AutoUpdates:        payload.AutoUpdates,
-			WeeklyReports:      payload.WeeklyReports,
-		}
-
-		// Вызов функции для обновления настроек в базе данных
-		if err := database.UpdateUserSettings(pool, settings); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка обновления настроек пользователя"})
+		// Получаем текущие настройки пользователя
+		currentSettings, err := database.GetUserSettingsByID(pool, userID)
+		if err != nil {
+			log.Printf("Ошибка при извлечении настроек пользователя с ID %d: %v", userID, err)
+			if err == sql.ErrNoRows {
+				c.JSON(http.StatusNotFound, gin.H{"error": "Настройки пользователя не найдены"})
+			} else {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при извлечении настроек пользователя"})
+			}
 			return
 		}
 
-		// Отправка успешного ответа с обновленными данными
-		response := UpdateUserSettingsResponse{
-			Message:  "Настройки успешно обновлены",
-			Settings: *settings,
+		// Если валюта изменяется, проводим конвертацию
+		if settings.Currency != currentSettings.Currency {
+			log.Printf("Валюта изменяется, текущая: %s, новая: %s", currentSettings.Currency, settings.Currency)
+
+			// Конвертируем валюту для всех данных пользователя
+			conversionErr := convertAllDataToNewCurrency(pool, userID, currentSettings.Currency, settings.Currency)
+			if conversionErr != nil {
+				log.Printf("Ошибка при конвертации данных для пользователя с ID %d: %v", userID, conversionErr)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Ошибка при конвертации данных: %v", conversionErr)})
+				return
+			}
 		}
-		c.JSON(http.StatusOK, response)
+
+		// Обновляем настройки пользователя
+		if err := database.updateUserSettingsCurrency(pool, userID, settings.Currency); err != nil {
+			log.Printf("Ошибка при обновлении настроек пользователя: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Ошибка при обновлении настроек пользователя: %v", err)})
+			return
+		}
+
+		// Возвращаем успешный ответ
+		c.JSON(http.StatusOK, gin.H{"message": "Настройки пользователя успешно обновлены"})
 	})
 
 	r.GET("/usersettings/:id/convert", func(c *gin.Context) {
@@ -583,53 +685,98 @@ func main() {
 			return
 		}
 
-		// Получаем настройки пользователя из базы данных, передавая пул
-		settings, err := database.GetUserSettingsByID(pool, userID) // Передаем пул как аргумент
-		if err != nil {
-			// Обрабатываем ошибки получения настроек
-			if err.Error() == "настройки пользователя с ID не найдены" {
-				c.JSON(http.StatusNotFound, gin.H{"error": "Настройки пользователя не найдены"})
-			} else {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при извлечении настроек пользователя"})
-			}
-			return
-		}
-
-		// Получаем параметры запроса для конвертации
-		amountParam := c.DefaultQuery("amount", "0") // Получаем параметр "amount", если не задан — ставим 0
+		amountParam := c.DefaultQuery("amount", "0")
 		amount, err := strconv.ParseFloat(amountParam, 64)
 		if err != nil || amount <= 0 {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Некорректная сумма"})
 			return
 		}
 
-		// Получаем валюты из настроек пользователя
-		fromCurrency := settings.OldCurrency // Ваша старая валюта
-		toCurrency := settings.Currency      // Текущая валюта
-
-		// Получаем курсы валют
-		fromRate, err := utils.GetCurrencyRate(fromCurrency)
+		// Получаем валюту транзакции для пользователя
+		transactionCurrency, err := database.GetTransactionCurrencyByUserID(pool, userID)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Ошибка получения курса для валюты %s: %v", fromCurrency, err)})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Ошибка при получении валюты транзакции: %v", err)})
 			return
 		}
 
-		toRate, err := utils.GetCurrencyRate(toCurrency)
+		// Получаем настройки пользователя
+		settings, err := database.GetUserSettingsByID(pool, userID)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Ошибка получения курса для валюты %s: %v", toCurrency, err)})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при извлечении настроек пользователя"})
+			return
+		}
+
+		// Получаем валюту из настроек пользователя
+		userCurrency := settings.Currency
+
+		// Получаем курсы валют параллельно
+		var wg sync.WaitGroup
+		var fromRate, toRate float64
+		var errFromRate, errToRate error
+
+		wg.Add(2)
+
+		// Получаем курс для валюты транзакции
+		go func() {
+			defer wg.Done()
+			fromRate, errFromRate = utils.GetCurrencyRate(transactionCurrency)
+		}()
+
+		// Получаем курс для валюты пользователя
+		go func() {
+			defer wg.Done()
+			toRate, errToRate = utils.GetCurrencyRate(userCurrency)
+		}()
+
+		// Ожидаем завершения обеих горутин
+		wg.Wait()
+
+		// Проверка ошибок при получении курсов
+		if errFromRate != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Ошибка получения курса для валюты %s: %v", transactionCurrency, errFromRate)})
+			return
+		}
+		if errToRate != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Ошибка получения курса для валюты %s: %v", userCurrency, errToRate)})
 			return
 		}
 
 		// Конвертируем сумму
 		convertedAmount := amount * (toRate / fromRate)
 
-		// Отправляем ответ с результатами
+		// Отправляем результат
 		c.JSON(http.StatusOK, gin.H{
 			"original_amount":  amount,
-			"from_currency":    fromCurrency,
-			"to_currency":      toCurrency,
+			"from_currency":    transactionCurrency,
+			"to_currency":      userCurrency,
 			"converted_amount": convertedAmount,
 		})
+
+		// Дополнительно конвертировать сумму бюджета, если валюта отличается от валюты пользователя
+		if transactionCurrency != userCurrency {
+			// Конвертировать бюджеты
+			budgets, err := database.GetBudgetsByUserID(pool, userID)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при получении бюджета"})
+				return
+			}
+
+			for _, budget := range budgets {
+				// Если валюта бюджета отличается от валюты пользователя, конвертируем бюджет
+				if budget.Currency != userCurrency {
+					convertedBudgetAmount := budget.Amount * (toRate / fromRate)
+					updatedBudget := budget
+					updatedBudget.Amount = convertedBudgetAmount
+
+					// Обновить в базе данных
+					err := database.UpdateBudget(pool, &updatedBudget)
+					if err != nil {
+						c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Ошибка обновления бюджета: %v", err)})
+						return
+					}
+				}
+			}
+		}
 	})
 
 	r.POST("/goals", func(c *gin.Context) {
@@ -748,7 +895,7 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"message": "Прогресс успешно обновлен"})
 	})
 
-	if err := r.Run(":8080"); err != nil {
+	if err := r.Run("localhost:8080"); err != nil {
 		log.Fatalf("Ошибка при запуске сервера: %v", err)
 	}
 }

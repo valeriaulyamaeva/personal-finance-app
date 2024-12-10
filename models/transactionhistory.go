@@ -10,4 +10,5 @@ type TransactionHistory struct {
 	OldValue      float64   `json:"old_value" db:"old_value"`
 	NewValue      float64   `json:"new_value" db:"new_value"`
 	UserName      string    `json:"user_name" db:"user_name"`
+	Currency      string    `json:"currency" db:"currency"`
 }

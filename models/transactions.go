@@ -12,4 +12,5 @@ type Transaction struct {
 	Description string    `json:"description" db:"description"`
 	GoalID      *int      `json:"goal_id,omitempty" db:"goal_id"` // Привязка к цели
 	CreatedAt   time.Time `json:"created_at" db:"created_at"`
+	Currency    string    `json:"currency" db:"currency"`
 }

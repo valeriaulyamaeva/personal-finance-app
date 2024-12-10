@@ -164,7 +164,7 @@ func AddProgressToGoalHandler(pool *pgxpool.Pool) http.HandlerFunc {
 	}
 }
 
-// AddMoneyToGoalHandler добавляет деньги в цель
+// AddMoneyToGoalHandler добавляет деньги к цели
 func AddMoneyToGoalHandler(pool *pgxpool.Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		vars := mux.Vars(r)
@@ -174,33 +174,28 @@ func AddMoneyToGoalHandler(pool *pgxpool.Pool) http.HandlerFunc {
 			return
 		}
 
-		var progressData struct {
+		// Данные для добавления денег в цель
+		var moneyData struct {
 			Amount float64 `json:"amount"`
 		}
 
-		// Декодируем данные
-		if err := json.NewDecoder(r.Body).Decode(&progressData); err != nil {
+		// Декодирование данных из тела запроса
+		if err := json.NewDecoder(r.Body).Decode(&moneyData); err != nil {
 			http.Error(w, "Некорректные данные", http.StatusBadRequest)
 			return
 		}
 
-		// Преобразуем количество денег в decimal.Decimal
-		amount := decimal.NewFromFloat(progressData.Amount)
+		// Преобразование float64 в decimal.Decimal
+		amount := decimal.NewFromFloat(moneyData.Amount)
 
-		// Убедимся, что сумма больше нуля
-		if amount.LessThanOrEqual(decimal.Zero) {
-			http.Error(w, "Сумма должна быть больше нуля", http.StatusBadRequest)
-			return
-		}
-
-		// Добавляем деньги к цели
-		if err := database.AddProgressToGoal(pool, id, amount); err != nil {
-			http.Error(w, "Не удалось добавить деньги", http.StatusInternalServerError)
+		// Добавление денег в цель
+		if err := database.AddMoneyToGoal(pool, id, amount); err != nil {
+			http.Error(w, "Не удалось добавить деньги в цель", http.StatusInternalServerError)
 			return
 		}
 
 		// Возвращаем успешный ответ
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"message": "Деньги успешно добавлены к цели"})
+		json.NewEncoder(w).Encode(map[string]string{"message": "Деньги успешно добавлены в цель"})
 	}
 }

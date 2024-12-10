@@ -11,15 +11,15 @@ import (
 func GetUserSettingsByID(pool *pgxpool.Pool, userID int) (*models.UserSettings, error) {
 	log.Printf("Получение настроек для user_id=%d", userID)
 
-	query := `SELECT id, user_id, two_factor_enabled, theme, notification_volume, auto_updates, 
-                     weekly_reports, currency, old_currency
+	query := `SELECT id, user_id, theme, notification_volume, auto_updates, 
+                     weekly_reports, currency
               FROM usersettings WHERE user_id = $1`
 
 	var settings models.UserSettings
 	err := pool.QueryRow(context.Background(), query, userID).Scan(
-		&settings.ID, &settings.UserID, &settings.TwoFactorEnabled, &settings.Theme,
+		&settings.ID, &settings.UserID, &settings.Theme,
 		&settings.NotificationVolume, &settings.AutoUpdates, &settings.WeeklyReports,
-		&settings.Currency, &settings.OldCurrency,
+		&settings.Currency,
 	)
 	if err != nil {
 		// Detailed logging to help identify the problem
@@ -41,28 +41,22 @@ func UpdateUserSettings(pool *pgxpool.Pool, settings *models.UserSettings) error
 
 	// Using named parameters for clarity
 	query := `UPDATE usersettings
-              SET two_factor_enabled = $1, theme = $2, notification_volume = $3,
-                  auto_updates = $4, weekly_reports = $5, currency = $6, old_currency = $7
-              WHERE user_id = $8`
+              SET theme = $1, notification_volume = $2,
+                  auto_updates = $3, weekly_reports = $4, currency = $5
+              WHERE user_id = $6`
 
 	// Prepare parameters considering string and bool values (instead of sql.Null* types)
-	var currency, oldCurrency interface{}
+	var currency interface{}
 	if settings.Currency != "" {
 		currency = settings.Currency
 	} else {
 		currency = nil
 	}
 
-	if settings.OldCurrency != "" {
-		oldCurrency = settings.OldCurrency
-	} else {
-		oldCurrency = nil
-	}
-
 	// Execute the update query
 	result, err := pool.Exec(context.Background(), query,
-		settings.TwoFactorEnabled, settings.Theme, settings.NotificationVolume,
-		settings.AutoUpdates, settings.WeeklyReports, currency, oldCurrency, settings.UserID,
+		settings.Theme, settings.NotificationVolume,
+		settings.AutoUpdates, settings.WeeklyReports, currency, settings.UserID,
 	)
 	if err != nil {
 		// Log error if update fails

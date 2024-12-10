@@ -11,4 +11,5 @@ type Budget struct {
 	Period          string    `json:"period" db:"period"`
 	StartDate       time.Time `json:"start_date" db:"start_date"`
 	EndDate         time.Time `json:"end_date" db:"end_date"`
+	Currency        string    `json:"currency" db:"currency"`
 }

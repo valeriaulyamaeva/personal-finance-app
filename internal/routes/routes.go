@@ -66,7 +66,7 @@ func SetupRouter(pool *pgxpool.Pool) *mux.Router {
 	goals.HandleFunc("/{id:[0-9]+}", handlers.UpdateGoalHandler(pool)).Methods("PUT")
 	goals.HandleFunc("/{id:[0-9]+}", handlers.DeleteGoalHandler(pool)).Methods("DELETE")
 	goals.HandleFunc("/{id:[0-9]+}/progress", handlers.AddProgressToGoalHandler(pool)).Methods("PATCH")
-	goals.HandleFunc("/{id:[0-9]+}/add_money", handlers.AddMoneyToGoalHandler(pool)).Methods("POST")
+	goals.HandleFunc("/{id:[0-9]+}/add_money", handlers.AddMoneyToGoalHandler(pool)).Methods("POST") // Новый маршрут
 
 	return r
 }

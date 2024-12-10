@@ -36,21 +36,18 @@ func RegisterUser(pool *pgxpool.Pool, user *models.User) error {
 	defer tx.Rollback(context.Background())
 
 	// Insert user
-	query := `
-		INSERT INTO users (email, password, name, is_admin)
-		VALUES ($1, $2, $3, $4)
-		RETURNING id`
+	query := `INSERT INTO users (email, password, name, is_admin) VALUES ($1, $2, $3, $4) RETURNING id`
 	err = tx.QueryRow(context.Background(), query, user.Email, user.Password, user.Name, false).Scan(&user.ID)
 	if err != nil {
 		return errors.New("ошибка добавления пользователя в базу данных")
 	}
 
 	settingsQuery := `
-		INSERT INTO usersettings (user_id, two_factor_enabled, theme, notification_volume, auto_updates, weekly_reports)
-		VALUES ($1, $2, $3, $4, $5, $6)`
-	_, err = tx.Exec(context.Background(), settingsQuery, user.ID, false, "light", 50, false, false)
+		INSERT INTO usersettings (user_id, theme, notification_volume, auto_updates, weekly_reports)
+		VALUES ($1, $2, $3, $4, $5)`
+	_, err = tx.Exec(context.Background(), settingsQuery, user.ID, "light", 50, false, false)
 	if err != nil {
-		return errors.New("ошибка создания дэфолтных настроек")
+		return errors.New("ошибка создания дефолтных настроек")
 	}
 
 	if err := tx.Commit(context.Background()); err != nil {
@@ -66,9 +63,6 @@ func AuthenticateUser(pool *pgxpool.Pool, email, password string) (*models.User,
 
 	err := pool.QueryRow(context.Background(), query, email).Scan(&user.ID, &user.Email, &user.Password, &user.Name)
 	if err != nil {
-		dummyHash, _ := bcrypt.GenerateFromPassword([]byte("dummy"), bcrypt.DefaultCost)
-		_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(password))
-
 		if err.Error() == "no rows in result set" {
 			log.Printf("Ошибка аутентификации: пользователь с email %s не найден.\n", email)
 			return nil, errors.New("пользователь не найден")
@@ -77,12 +71,13 @@ func AuthenticateUser(pool *pgxpool.Pool, email, password string) (*models.User,
 		return nil, fmt.Errorf("ошибка при аутентификации: %v", err)
 	}
 
+	// Compare hashed password
 	err = bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(password))
 	if err != nil {
 		log.Printf("Ошибка аутентификации: неверный пароль для email %s.\n", email)
 		return nil, errors.New("неверный пароль")
 	}
 
-	user.Password = ""
+	user.Password = "" // Не возвращаем пароль
 	return &user, nil
 }

@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
@@ -15,98 +16,108 @@ type CurrencyRate struct {
 }
 
 var (
-	cachedRates  = make(map[string]CurrencyRate)
-	cacheMutex   = sync.Mutex{}
+	cachedRates  = sync.Map{}
 	lastFetch    time.Time
 	cacheTimeout = 1 * time.Hour
-	apiURL       = "https://openexchangerates.org/api/latest.json"
-	apiKey       = "YOUR_API_KEY" // Ваш API ключ
+	apiURL       = "https://v6.exchangerate-api.com/v6/e8c2f4afec9e1abf33fd661d/latest/"
 )
 
-// GetCurrencyRate fetches and caches currency rates from Open Exchange Rates API
 func GetCurrencyRate(currencyCode string) (float64, error) {
-	cacheMutex.Lock()
-	defer cacheMutex.Unlock()
-
-	// Use cached data if it's still valid
-	if time.Since(lastFetch) < cacheTimeout {
-		if rate, ok := cachedRates[currencyCode]; ok {
+	// Check if rate is in cache and it's still valid
+	if rate, ok := cachedRates.Load(currencyCode); ok {
+		if time.Since(lastFetch) < cacheTimeout {
 			log.Printf("Using cached rate for currency: %s", currencyCode)
-			return rate.Rate, nil
+			return rate.(CurrencyRate).Rate, nil
 		}
-		log.Printf("Currency %s not found in cache, refreshing rates", currencyCode)
 	}
 
-	// Fetch and update the cache
-	if err := fetchExchangeRates(); err != nil {
-		log.Printf("Failed to fetch exchange rates: %v", err)
-		return 0, err
+	if time.Since(lastFetch) >= cacheTimeout {
+		if err := fetchExchangeRates(); err != nil {
+			log.Printf("Failed to fetch exchange rates: %v", err)
+			// Use cached data if available and still valid
+			if rate, ok := cachedRates.Load(currencyCode); ok {
+				log.Printf("Using cached rate for currency: %s (after failed fetch)", currencyCode)
+				return rate.(CurrencyRate).Rate, nil
+			}
+			return 0, err
+		}
 	}
 
-	rate, ok := cachedRates[currencyCode]
-	if !ok {
-		log.Printf("Currency %s not found after fetching rates", currencyCode)
-		return 0, errors.New("currency not found")
+	// Retry fetching the currency rate from cache
+	if rate, ok := cachedRates.Load(currencyCode); ok {
+		return rate.(CurrencyRate).Rate, nil
 	}
 
-	return rate.Rate, nil
+	return 0, errors.New("currency not found")
 }
 
-// fetchExchangeRates fetches rates from Open Exchange Rates API and updates the cache
 func fetchExchangeRates() error {
 	client := http.Client{Timeout: 10 * time.Second}
-	url := apiURL + "?app_id=" + apiKey
-	resp, err := client.Get(url)
-	if err != nil {
-		log.Printf("Error fetching rates from API: %v", err)
-		return err
-	}
-	defer resp.Body.Close()
+	url := apiURL + "USD" // Base currency is set to USD for better compatibility
 
-	if resp.StatusCode != http.StatusOK {
-		log.Printf("API returned non-OK status: %d", resp.StatusCode)
-		return errors.New("API returned an error")
-	}
-
-	var response struct {
-		Rates map[string]float64 `json:"rates"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		log.Printf("Error decoding API response: %v", err)
-		return err
-	}
-
-	// Validate and update cache
-	newCache := make(map[string]CurrencyRate)
-	for code, rate := range response.Rates {
-		if rate > 0 {
-			newCache[code] = CurrencyRate{Code: code, Rate: rate}
-		} else {
-			log.Printf("Invalid rate for currency: %s", code)
+	var lastErr error
+	for i := 0; i < 3; i++ {
+		resp, err := client.Get(url)
+		if err != nil {
+			lastErr = err
+			log.Printf("Error fetching rates (attempt %d): %v", i+1, err)
+			time.Sleep(2 * time.Second)
+			continue
 		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			lastErr = errors.New("API returned non-OK status")
+			log.Printf("API returned non-OK status: %d (attempt %d)", resp.StatusCode, i+1)
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		var response struct {
+			ConversionRates map[string]float64 `json:"conversion_rates"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+			lastErr = err
+			log.Printf("Error decoding API response (attempt %d): %v", i+1, err)
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		// Only update the cache if valid data is found
+		if len(response.ConversionRates) > 0 {
+			for code, rate := range response.ConversionRates {
+				if rate > 0 {
+					cachedRates.Store(code, CurrencyRate{Code: code, Rate: rate})
+				} else {
+					log.Printf("Invalid rate for currency: %s", code)
+				}
+			}
+			lastFetch = time.Now()
+			log.Println("Exchange rates cache updated successfully")
+			return nil
+		}
+
+		lastErr = errors.New("no valid data to update cache")
+		log.Println(lastErr)
+		time.Sleep(2 * time.Second)
 	}
 
-	// Only update the cache if we have valid data
-	if len(newCache) > 0 {
-		cachedRates = newCache
-		lastFetch = time.Now()
-		log.Println("Exchange rates cache updated successfully")
-	} else {
-		log.Println("No valid data to update cache")
-	}
-
-	return nil
+	return lastErr
 }
 
-// ConvertCurrency converts an amount from one currency to another
 func ConvertCurrency(amount float64, fromCurrency, toCurrency string) (float64, error) {
-	// Fetch rates concurrently
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var wg sync.WaitGroup
 	fromRateChan := make(chan float64)
 	toRateChan := make(chan float64)
 	errChan := make(chan error, 2)
 
-	// Fetch rate for 'from' currency
+	// Fetch rates for 'from' and 'to' currency concurrently
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		fromRate, err := GetCurrencyRate(fromCurrency)
 		if err != nil {
 			errChan <- err
@@ -115,8 +126,9 @@ func ConvertCurrency(amount float64, fromCurrency, toCurrency string) (float64, 
 		fromRateChan <- fromRate
 	}()
 
-	// Fetch rate for 'to' currency
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		toRate, err := GetCurrencyRate(toCurrency)
 		if err != nil {
 			errChan <- err
@@ -125,21 +137,31 @@ func ConvertCurrency(amount float64, fromCurrency, toCurrency string) (float64, 
 		toRateChan <- toRate
 	}()
 
-	// Wait for both responses
+	wg.Wait()
+
 	var fromRate, toRate float64
 	select {
 	case fromRate = <-fromRateChan:
 	case err := <-errChan:
 		return 0, err
+	case <-ctx.Done():
+		return 0, errors.New("timeout reached while fetching rates")
 	}
 
 	select {
 	case toRate = <-toRateChan:
 	case err := <-errChan:
 		return 0, err
+	case <-ctx.Done():
+		return 0, errors.New("timeout reached while fetching rates")
 	}
 
-	// Convert the amount
+	// Validate rates are valid
+	if fromRate == 0 || toRate == 0 {
+		return 0, errors.New("invalid currency rates")
+	}
+
+	// Convert amount based on the rates
 	convertedAmount := amount * (toRate / fromRate)
 	return convertedAmount, nil
 }

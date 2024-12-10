@@ -132,12 +132,24 @@ func GetAllTransactions(pool *pgxpool.Pool) ([]*models.Transaction, error) {
 }
 
 func UpdateTransaction(pool *pgxpool.Pool, transaction *models.Transaction) error {
+	// Получаем старую сумму для корректировки баланса цели
+	var oldAmount float64
+	selectQuery := `
+		SELECT amount 
+		FROM transactions 
+		WHERE id = $1`
+	err := pool.QueryRow(context.Background(), selectQuery, transaction.ID).Scan(&oldAmount)
+	if err != nil {
+		return fmt.Errorf("ошибка при получении старой суммы транзакции: %v", err)
+	}
+
+	// Обновляем саму транзакцию
 	query := `
 		UPDATE transactions 
 		SET category_id = $1, amount = $2, description = $3, transaction_date = $4, type = $5
 		WHERE id = $6`
 
-	_, err := pool.Exec(context.Background(), query,
+	_, err = pool.Exec(context.Background(), query,
 		transaction.CategoryID,
 		transaction.Amount,
 		transaction.Description,
@@ -147,12 +159,45 @@ func UpdateTransaction(pool *pgxpool.Pool, transaction *models.Transaction) erro
 	if err != nil {
 		return fmt.Errorf("ошибка обновления транзакции: %v", err)
 	}
+
+	// Если транзакция привязана к цели, обновляем баланс цели
+	if transaction.GoalID != nil {
+		// Если транзакция изменяет баланс цели, откатываем старую сумму и добавляем новую
+		err := updateGoalBalance(pool, *transaction.GoalID, oldAmount, "expense")
+		if err != nil {
+			return fmt.Errorf("ошибка при обновлении баланса цели при изменении: %v", err)
+		}
+		err = updateGoalBalance(pool, *transaction.GoalID, transaction.Amount, transaction.Type)
+		if err != nil {
+			return fmt.Errorf("ошибка при обновлении баланса цели при изменении: %v", err)
+		}
+	}
+
 	return nil
 }
 
 func DeleteTransaction(pool *pgxpool.Pool, transactionID int) error {
-	query := `DELETE FROM transactions WHERE id = $1`
+	// Получаем информацию о транзакции перед удалением
+	var transaction models.Transaction
+	selectQuery := `
+		SELECT user_id, category_id, amount, description, transaction_date, type, goal_id
+		FROM transactions 
+		WHERE id = $1`
+	err := pool.QueryRow(context.Background(), selectQuery, transactionID).Scan(
+		&transaction.UserID,
+		&transaction.CategoryID,
+		&transaction.Amount,
+		&transaction.Description,
+		&transaction.Date,
+		&transaction.Type,
+		&transaction.GoalID,
+	)
+	if err != nil {
+		return fmt.Errorf("ошибка при получении транзакции для удаления: %v", err)
+	}
 
+	// Удаляем транзакцию
+	query := `DELETE FROM transactions WHERE id = $1`
 	result, err := pool.Exec(context.Background(), query, transactionID)
 	if err != nil {
 		return fmt.Errorf("ошибка удаления транзакции: %v", err)
@@ -161,6 +206,21 @@ func DeleteTransaction(pool *pgxpool.Pool, transactionID int) error {
 	if result.RowsAffected() == 0 {
 		return fmt.Errorf("транзакция с ID %d не найдена", transactionID)
 	}
+
+	// Если транзакция привязана к цели, обновляем баланс цели
+	if transaction.GoalID != nil {
+		// Если транзакция была расходом, нужно добавить сумму обратно к балансу цели
+		err := updateGoalBalance(pool, *transaction.GoalID, transaction.Amount, "income")
+		if err != nil {
+			return fmt.Errorf("ошибка при обновлении баланса цели после удаления: %v", err)
+		}
+		// Если транзакция была доходом, нужно вычесть сумму из баланса цели
+		err = updateGoalBalance(pool, *transaction.GoalID, transaction.Amount, "expense")
+		if err != nil {
+			return fmt.Errorf("ошибка при обновлении баланса цели после удаления: %v", err)
+		}
+	}
+
 	return nil
 }
 
@@ -246,6 +306,10 @@ func updateGoalBalance(pool *pgxpool.Pool, goalID int, amount float64, transacti
 	} else if transactionType == "income" {
 		// Если транзакция типа "income", увеличиваем баланс цели
 		newBalance = currentAmount + amount
+	} else if transactionType == "goal" {
+		// Handle "goal" type if needed (balance can stay same or be updated based on a goal-specific logic)
+		// For example, we can log or throw an error if the logic requires further handling here.
+		return nil // Skip updating balance for "goal", or handle it differently.
 	} else {
 		return fmt.Errorf("неизвестный тип транзакции: %s", transactionType)
 	}
@@ -268,4 +332,21 @@ func updateGoalBalance(pool *pgxpool.Pool, goalID int, amount float64, transacti
 	}
 
 	return nil
+}
+
+// Получение валюты транзакции по ID пользователя
+func GetTransactionCurrencyByUserID(pool *pgxpool.Pool, userID int) (string, error) {
+	// Запрос для получения валюты транзакции
+	query := "SELECT currency FROM transactions WHERE user_id = $1 LIMIT 1"
+	var currency string
+	err := pool.QueryRow(context.Background(), query, userID).Scan(&currency)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			// Если данных нет для пользователя, возвращаем ошибку
+			return "", fmt.Errorf("не найдена валюта для пользователя с ID %d", userID)
+		}
+		// Обработка других ошибок
+		return "", fmt.Errorf("ошибка при получении валюты транзакции для пользователя: %v", err)
+	}
+	return currency, nil
 }

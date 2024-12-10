@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/gin-gonic/gin"
 	"github.com/valeriaulyamaeva/personal-finance-app/utils"
 	"log"
 	"net/http"
@@ -92,61 +93,60 @@ func UpdateUserSettingsHandler(pool *pgxpool.Pool) http.HandlerFunc {
 	}
 }
 
-// ConvertCurrencyHandler performs currency conversion
-func ConvertCurrencyHandler(pool *pgxpool.Pool) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// Extract query parameters
-		from := r.URL.Query().Get("from")
-		to := r.URL.Query().Get("to")
-		amountStr := r.URL.Query().Get("amount")
-
-		// Check if required parameters are missing
-		if from == "" || to == "" || amountStr == "" {
-			http.Error(w, "Missing parameters 'from', 'to', or 'amount'", http.StatusBadRequest)
-			log.Printf("Missing query parameters from=%s, to=%s, amount=%s", from, to, amountStr)
+func ConvertCurrencyHandler(pool *pgxpool.Pool) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// Получаем ID пользователя из параметра запроса
+		userID, err := strconv.Atoi(c.Param("id"))
+		if err != nil || userID <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Некорректный или отсутствующий идентификатор пользователя"})
 			return
 		}
 
-		// Convert amount to float
-		amount, err := strconv.ParseFloat(amountStr, 64)
+		// Получаем настройки пользователя из базы данных, передавая пул
+		settings, err := database.GetUserSettingsByID(pool, userID)
+		if err != nil {
+			if err.Error() == "настройки пользователя с ID не найдены" {
+				c.JSON(http.StatusNotFound, gin.H{"error": "Настройки пользователя не найдены"})
+			} else {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при извлечении настроек пользователя"})
+			}
+			return
+		}
+
+		// Получаем параметры запроса для конвертации
+		amountParam := c.DefaultQuery("amount", "0")
+		amount, err := strconv.ParseFloat(amountParam, 64)
 		if err != nil || amount <= 0 {
-			http.Error(w, "Invalid 'amount' value", http.StatusBadRequest)
-			log.Printf("Invalid amount value: %s", amountStr)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Некорректная сумма"})
 			return
 		}
 
-		// Fetch exchange rate for 'from' currency
-		fromRate, err := utils.GetCurrencyRate(from)
+		// Получаем валюты из настроек пользователя
+		fromCurrency := settings.OldCurrency // старая валюта
+		toCurrency := settings.Currency      // новая валюта
+
+		// Получаем курсы валют
+		fromRate, err := utils.GetCurrencyRate(fromCurrency)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("Error fetching exchange rate for 'from' currency '%s': %v", from, err), http.StatusInternalServerError)
-			log.Printf("Error fetching exchange rate for currency '%s': %v", from, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Ошибка получения курса для валюты %s: %v", fromCurrency, err)})
 			return
 		}
 
-		// Fetch exchange rate for 'to' currency
-		toRate, err := utils.GetCurrencyRate(to)
+		toRate, err := utils.GetCurrencyRate(toCurrency)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("Error fetching exchange rate for 'to' currency '%s': %v", to, err), http.StatusInternalServerError)
-			log.Printf("Error fetching exchange rate for currency '%s': %v", to, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Ошибка получения курса для валюты %s: %v", toCurrency, err)})
 			return
 		}
 
-		// Calculate the converted amount
+		// Конвертируем сумму
 		convertedAmount := amount * (toRate / fromRate)
 
-		// Create response JSON
-		response := map[string]interface{}{
-			"from_currency": from,
-			"to_currency":   to,
-			"amount":        amount,
-			"converted":     convertedAmount,
-		}
-
-		// Send JSON response
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(response); err != nil {
-			http.Error(w, "Error sending response", http.StatusInternalServerError)
-			log.Printf("Error sending JSON response: %v", err)
-		}
+		// Отправляем ответ с результатами
+		c.JSON(http.StatusOK, gin.H{
+			"original_amount":  amount,
+			"from_currency":    fromCurrency,
+			"to_currency":      toCurrency,
+			"converted_amount": convertedAmount,
+		})
 	}
 }
