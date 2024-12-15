@@ -12,10 +12,12 @@ import (
 	"github.com/valeriaulyamaeva/personal-finance-app/internal/database"
 	"github.com/valeriaulyamaeva/personal-finance-app/models"
 	"github.com/valeriaulyamaeva/personal-finance-app/utils"
+	"golang.org/x/crypto/bcrypt"
 	"log"
 	"net/http"
 	"strconv"
 	"sync"
+	"time"
 )
 
 func ScheduleBudgetRenewal(pool *pgxpool.Pool) {
@@ -77,12 +79,46 @@ func CORSMiddleware() gin.HandlerFunc {
 	}
 }
 
+func ScheduleDailyReminderNotifications(pool *pgxpool.Pool) {
+	c := cron.New()
+
+	// Запускаем задачу каждую ночь
+	c.AddFunc("0 0 * * *", func() {
+		log.Println("Запуск ежедневной проверки уведомлений...")
+
+		// Текущее время
+		now := time.Now()
+
+		// Получаем все напоминания, которые должны быть отправлены
+		query := `SELECT id, user_id, description, amount, due_date FROM payment_reminders WHERE due_date >= $1`
+		rows, err := pool.Query(context.Background(), query, now)
+		if err != nil {
+			log.Printf("Ошибка при запросе напоминаний: %v", err)
+			return
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var reminder models.PaymentReminder
+			if err := rows.Scan(&reminder.ID, &reminder.UserID, &reminder.Description, &reminder.Amount, &reminder.DueDate); err != nil {
+				log.Printf("Ошибка при чтении напоминания: %v", err)
+				continue
+			}
+
+			// Используем новую функцию для планирования уведомлений
+			if err := database.ScheduleSingleNotification(pool, &reminder); err != nil {
+				log.Printf("Ошибка при планировании уведомлений для напоминания ID %d: %v", reminder.ID, err)
+			}
+		}
+	})
+
+	c.Start()
+}
+
 func convertAllDataToNewCurrency(pool *pgxpool.Pool, userID int, oldCurrency string, newCurrency string) error {
 	// Получаем курсы валют для конвертации
 	fromRate, errFromRate := utils.GetCurrencyRate(oldCurrency)
 	toRate, errToRate := utils.GetCurrencyRate(newCurrency)
-
-	log.Printf("Получаем курсы для валют: %s -> %s, fromRate: %v, toRate: %v", oldCurrency, newCurrency, fromRate, toRate)
 
 	if errFromRate != nil || errToRate != nil {
 		log.Printf("Ошибка при получении курсов валют: %v, %v", errFromRate, errToRate)
@@ -92,7 +128,7 @@ func convertAllDataToNewCurrency(pool *pgxpool.Pool, userID int, oldCurrency str
 	conversionRate := toRate / fromRate
 	log.Printf("Конвертационный курс: %.4f", conversionRate)
 
-	// Конвертируем бюджеты
+	// Конвертируем и обновляем валюту для всех бюджетов
 	budgets, err := database.GetBudgetsByUserID(pool, userID)
 	if err != nil {
 		log.Printf("Ошибка при получении бюджета для пользователя с ID %d: %v", userID, err)
@@ -102,7 +138,6 @@ func convertAllDataToNewCurrency(pool *pgxpool.Pool, userID int, oldCurrency str
 	for _, budget := range budgets {
 		if budget.Currency != newCurrency {
 			convertedAmount := budget.Amount * conversionRate
-			log.Printf("Конвертация бюджета с ID %d: %.2f -> %.2f %s", budget.ID, budget.Amount, convertedAmount, newCurrency)
 			budget.Amount = convertedAmount
 			budget.Currency = newCurrency
 			if err := database.UpdateBudget(pool, &budget); err != nil {
@@ -112,7 +147,7 @@ func convertAllDataToNewCurrency(pool *pgxpool.Pool, userID int, oldCurrency str
 		}
 	}
 
-	// Конвертируем транзакции
+	// Конвертируем и обновляем валюту для всех транзакций
 	transactions, err := database.GetTransactionsByUserID(pool, userID)
 	if err != nil {
 		log.Printf("Ошибка при получении транзакций для пользователя с ID %d: %v", userID, err)
@@ -122,7 +157,6 @@ func convertAllDataToNewCurrency(pool *pgxpool.Pool, userID int, oldCurrency str
 	for _, transaction := range transactions {
 		if transaction.Currency != newCurrency {
 			convertedAmount := transaction.Amount * conversionRate
-			log.Printf("Конвертация транзакции с ID %d: %.2f -> %.2f %s", transaction.ID, transaction.Amount, convertedAmount, newCurrency)
 			transaction.Amount = convertedAmount
 			transaction.Currency = newCurrency
 			if err := database.UpdateTransaction(pool, &transaction); err != nil {
@@ -132,7 +166,7 @@ func convertAllDataToNewCurrency(pool *pgxpool.Pool, userID int, oldCurrency str
 		}
 	}
 
-	// Конвертируем цель
+	// Конвертируем и обновляем валюту для цели
 	goal, err := database.GetGoalByID(pool, userID)
 	if err != nil {
 		log.Printf("Ошибка при получении цели для пользователя с ID %d: %v", userID, err)
@@ -141,7 +175,6 @@ func convertAllDataToNewCurrency(pool *pgxpool.Pool, userID int, oldCurrency str
 
 	if goal.Currency != newCurrency {
 		convertedAmount := goal.Amount * conversionRate
-		log.Printf("Конвертация цели с ID %d: %.2f -> %.2f %s", goal.ID, goal.Amount, convertedAmount, newCurrency)
 		goal.Amount = convertedAmount
 		goal.Currency = newCurrency
 		if err := database.UpdateGoal(pool, goal); err != nil {
@@ -181,6 +214,7 @@ func main() {
 
 	ScheduleBudgetRenewal(pool)
 	ScheduleTransactionArchival(pool)
+	ScheduleDailyReminderNotifications(pool)
 
 	r.POST("/register", func(c *gin.Context) {
 		var user models.User
@@ -209,13 +243,21 @@ func main() {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Ошибка ввода данных"})
 			return
 		}
+
 		user, err := database.AuthenticateUser(pool, credentials.Email, credentials.Password)
 		if err != nil {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Ошибка авторизации: неверный email или пароль"})
 			return
 		}
-		user.Password = ""
-		c.JSON(http.StatusOK, gin.H{"message": "Авторизация успешна", "user": user})
+
+		user.Password = "" // Убираем пароль из ответа для безопасности
+
+		// Возвращаем is_admin для проверки роли
+		c.JSON(http.StatusOK, gin.H{
+			"message":  "Авторизация успешна",
+			"user":     user,
+			"is_admin": user.IsAdmin,
+		})
 	})
 
 	r.POST("/categories", func(c *gin.Context) {
@@ -521,16 +563,46 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"message": "Уведомление успешно удалено"})
 	})
 
+	r.DELETE("/notifications/by-notification-id/:id", func(c *gin.Context) {
+		notificationID := c.Param("id")
+
+		// Преобразуем ID в int
+		id, err := strconv.Atoi(notificationID)
+		if err != nil {
+			log.Printf("Ошибка преобразования ID: %v", err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Некорректный идентификатор уведомления"})
+			return
+		}
+		log.Printf("Получен запрос на удаление уведомления с ID: %d", id)
+
+		// Пытаемся удалить уведомление
+		err = database.DeleteNotificationByNotificationID(pool, id)
+		if err != nil {
+			log.Printf("Ошибка при удалении уведомления с ID %d: %v", id, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка удаления уведомления"})
+			return
+		}
+
+		log.Printf("Уведомление с ID %d успешно удалено", id)
+		c.JSON(http.StatusOK, gin.H{"message": "Уведомление успешно удалено"})
+	})
+
 	r.POST("/payment_reminders", func(c *gin.Context) {
 		var reminder models.PaymentReminder
 		if err := c.ShouldBindJSON(&reminder); err != nil {
+			// Логируем ошибку валидации данных
+			log.Printf("Failed to bind JSON: %v", err)
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Некорректный ввод"})
 			return
 		}
+
 		if err := database.CreatePaymentReminder(pool, &reminder); err != nil {
+			// Логируем ошибку при создании напоминания
+			log.Printf("Failed to create payment reminder: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка создания напоминания о платеже"})
 			return
 		}
+
 		c.JSON(http.StatusCreated, reminder)
 	})
 
@@ -540,7 +612,23 @@ func main() {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Некорректный идентификатор пользователя"})
 			return
 		}
-		reminders, err := database.GetPaymentRemindersByUserID(pool, userID)
+
+		// Получаем дату для фильтрации, если указана
+		dateFilter := c.DefaultQuery("date", "")
+		var reminders []models.PaymentReminder
+		if dateFilter == "" {
+			reminders, err = database.GetPaymentRemindersByUserID(pool, userID)
+		} else {
+			// Преобразуем строку даты в формат time.Time
+			date, err := time.Parse("2006-01-02", dateFilter)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Некорректная дата"})
+				return
+			}
+			// Получаем напоминания для указанной даты
+			reminders, err = database.GetPaymentRemindersByUserIDAndDate(pool, userID, date)
+		}
+
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка получения напоминаний о платежах"})
 			return
@@ -554,11 +642,20 @@ func main() {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Некорректный идентификатор напоминания"})
 			return
 		}
-		reminder, err := database.GetPaymentReminderByID(pool, id)
+
+		log.Printf("Получение напоминаний для пользователя с ID: %d", id)
+
+		reminder, err := database.GetPaymentRemindersByUserID(pool, id)
 		if err != nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Напоминание о платеже не найдено"})
+			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 			return
 		}
+
+		if len(reminder) == 0 {
+			c.JSON(http.StatusOK, gin.H{"message": "У вас нет напоминаний"})
+			return
+		}
+
 		c.JSON(http.StatusOK, reminder)
 	})
 
@@ -566,18 +663,27 @@ func main() {
 		var reminder models.PaymentReminder
 		id, err := strconv.Atoi(c.Param("id"))
 		if err != nil {
+			// Логируем ошибку при получении ID
+			log.Printf("Invalid reminder ID: %v", err)
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Некорректный идентификатор напоминания"})
 			return
 		}
+
 		if err := c.ShouldBindJSON(&reminder); err != nil {
+			// Логируем ошибку валидации данных
+			log.Printf("Failed to bind JSON: %v", err)
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Некорректный ввод"})
 			return
 		}
 		reminder.ID = id
+
 		if err := database.UpdatePaymentReminder(pool, &reminder); err != nil {
+			// Логируем ошибку при обновлении напоминания
+			log.Printf("Failed to update payment reminder: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка обновления напоминания о платеже"})
 			return
 		}
+
 		c.JSON(http.StatusOK, gin.H{"message": "Напоминание о платеже успешно обновлено"})
 	})
 
@@ -657,23 +763,22 @@ func main() {
 		if settings.Currency != currentSettings.Currency {
 			log.Printf("Валюта изменяется, текущая: %s, новая: %s", currentSettings.Currency, settings.Currency)
 
-			// Конвертируем валюту для всех данных пользователя
-			conversionErr := convertAllDataToNewCurrency(pool, userID, currentSettings.Currency, settings.Currency)
-			if conversionErr != nil {
-				log.Printf("Ошибка при конвертации данных для пользователя с ID %d: %v", userID, conversionErr)
-				c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Ошибка при конвертации данных: %v", conversionErr)})
+			// Конвертируем данные в новой валюте
+			if err := convertAllDataToNewCurrency(pool, userID, currentSettings.Currency, settings.Currency); err != nil {
+				log.Printf("Ошибка при конвертации данных для пользователя с ID %d: %v", userID, err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Ошибка при конвертации данных: %v", err)})
+				return
+			}
+
+			// Обновляем валюту в таблице настроек пользователя
+			currentSettings.Currency = settings.Currency
+			if err := database.UpdateUserSettings(pool, currentSettings); err != nil {
+				log.Printf("Ошибка при обновлении настроек пользователя с ID %d: %v", userID, err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при обновлении настроек пользователя"})
 				return
 			}
 		}
 
-		// Обновляем настройки пользователя
-		if err := database.updateUserSettingsCurrency(pool, userID, settings.Currency); err != nil {
-			log.Printf("Ошибка при обновлении настроек пользователя: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Ошибка при обновлении настроек пользователя: %v", err)})
-			return
-		}
-
-		// Возвращаем успешный ответ
 		c.JSON(http.StatusOK, gin.H{"message": "Настройки пользователя успешно обновлены"})
 	})
 
@@ -895,7 +1000,206 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"message": "Прогресс успешно обновлен"})
 	})
 
+	r.GET("/users", func(c *gin.Context) {
+		users, err := database.GetAllUsers(pool)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при получении списка пользователей"})
+			return
+		}
+		c.JSON(http.StatusOK, users)
+	})
+
+	r.PUT("/users/:id", func(c *gin.Context) {
+		var user models.User
+		if err := c.ShouldBindJSON(&user); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат данных"})
+			return
+		}
+
+		userID, err := strconv.Atoi(c.Param("id"))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный ID пользователя"})
+			return
+		}
+		user.ID = userID
+
+		if err := database.UpdateUser(pool, &user); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при обновлении пользователя"})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"message": "Пользователь успешно обновлен"})
+	})
+
+	r.DELETE("/users/:id", func(c *gin.Context) {
+		userID, err := strconv.Atoi(c.Param("id"))
+		if err != nil {
+			log.Printf("Invalid user ID: %v", c.Param("id"))
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный ID пользователя"})
+			return
+		}
+
+		log.Printf("Attempting to delete user with ID: %d", userID)
+		if err := database.DeleteUser(pool, userID); err != nil {
+			log.Printf("Error deleting user with ID %d: %v", userID, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при удалении пользователя"})
+			return
+		}
+
+		log.Printf("User with ID %d successfully deleted", userID)
+		c.JSON(http.StatusOK, gin.H{"message": "Пользователь успешно удален"})
+	})
+
+	r.POST("/users", func(c *gin.Context) {
+		var newUser models.User
+
+		// Парсим тело запроса в структуру `newUser`
+		if err := c.ShouldBindJSON(&newUser); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат данных"})
+			return
+		}
+
+		// Хэшируем пароль перед сохранением
+		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(newUser.Password), bcrypt.DefaultCost)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка хэширования пароля"})
+			return
+		}
+		newUser.Password = string(hashedPassword)
+
+		// Создаем пользователя через функцию CreateUser
+		err = database.CreateUser(pool, &newUser)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Ошибка создания пользователя: %v", err)})
+			return
+		}
+
+		// Возвращаем успешный ответ с данными нового пользователя
+		c.JSON(http.StatusCreated, gin.H{
+			"message": "Пользователь успешно создан",
+			"user": gin.H{
+				"id":    newUser.ID,
+				"name":  newUser.Name,
+				"email": newUser.Email,
+			},
+		})
+	})
+
+	r.GET("/admin/user_stats", database.GetUserStats(pool))
+
+	r.GET("/admin/registrations_by_month", database.GetRegistrationsByMonth(pool))
+
+	r.GET("/admin/user_roles", database.GetUserRoles(pool))
+
+	r.POST("/family_accounts", func(c *gin.Context) {
+		var request struct {
+			Nickname    string `json:"nickname"`
+			OwnerUserID int    `json:"owner_user_id"`
+		}
+
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат данных"})
+			return
+		}
+
+		familyID, err := database.CreateFamilyAccount(pool, request.Nickname, request.OwnerUserID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Ошибка создания семейного аккаунта: %v", err)})
+			return
+		}
+
+		c.JSON(http.StatusCreated, gin.H{
+			"message": "Семейный аккаунт успешно создан",
+			"family_account": gin.H{
+				"id":       familyID,
+				"nickname": request.Nickname,
+			},
+		})
+	})
+
+	r.POST("/family_accounts/join", func(c *gin.Context) {
+		var request struct {
+			UserID   int    `json:"user_id"`
+			Nickname string `json:"nickname"`
+			Role     string `json:"role"`
+		}
+
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат данных"})
+			return
+		}
+
+		if err := database.JoinFamilyAccount(pool, request.UserID, request.Nickname, request.Role); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Ошибка присоединения к семейному аккаунту: %v", err)})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"message": "Пользователь успешно присоединился к семейному аккаунту"})
+	})
+
+	r.GET("/family_accounts/:id/members", func(c *gin.Context) {
+		familyAccountID, err := strconv.Atoi(c.Param("id"))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный ID семейного аккаунта"})
+			return
+		}
+
+		members, err := database.GetFamilyMembers(pool, familyAccountID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Ошибка получения участников семейного аккаунта: %v", err)})
+			return
+		}
+
+		c.JSON(http.StatusOK, members)
+	})
+
+	r.GET("/users/:id/family_account", func(c *gin.Context) {
+		userID, err := strconv.Atoi(c.Param("id"))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный ID пользователя"})
+			return
+		}
+
+		familyAccountID, err := database.GetFamilyAccountByUser(pool, userID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Ошибка получения семейного аккаунта: %v", err)})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"family_account_id": familyAccountID})
+	})
+
+	r.GET("/users/:id/family_account/check", func(c *gin.Context) {
+		userID, err := strconv.Atoi(c.Param("id"))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный ID пользователя"})
+			return
+		}
+
+		familyAccountID, err := database.GetFamilyAccountByUser(pool, userID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Ошибка получения семейного аккаунта: %v", err)})
+			return
+		}
+
+		// Получаем ID владельца семейного аккаунта
+		ownerID, err := database.GetFamilyAccountOwnerID(pool, familyAccountID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Ошибка получения ID владельца: %v", err)})
+			return
+		}
+
+		// Перенаправляем пользователя на страницу создателя
+		if userID == ownerID {
+			c.JSON(http.StatusOK, gin.H{"message": "Вы являетесь владельцем семейного аккаунта", "redirect_to": "/owner_page"})
+		} else {
+			c.JSON(http.StatusOK, gin.H{"message": "Вы состоите в семейном аккаунте", "redirect_to": fmt.Sprintf("/family_account/%d", familyAccountID)})
+		}
+	})
+
 	if err := r.Run("localhost:8080"); err != nil {
 		log.Fatalf("Ошибка при запуске сервера: %v", err)
 	}
+
+	select {}
 }

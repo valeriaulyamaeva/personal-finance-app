@@ -11,12 +11,23 @@ import (
 )
 
 func CreateBudget(pool *pgxpool.Pool, budget *models.Budget) error {
+	// Проверяем, существует ли пользователь с таким user_id
+	var userExists bool
+	checkUserQuery := `SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)`
+	err := pool.QueryRow(context.Background(), checkUserQuery, budget.UserID).Scan(&userExists)
+	if err != nil {
+		return fmt.Errorf("ошибка при проверке пользователя: %v", err)
+	}
+	if !userExists {
+		return fmt.Errorf("пользователь с ID %d не существует", budget.UserID)
+	}
+
+	// Если пользователь существует, продолжаем вставку бюджета
 	query := `
 		INSERT INTO budgets (user_id, category_id, amount, remaining_amount, period, start_date, end_date) 
 		VALUES ($1, $2, $3, $3, $4, $5, $6) 
 		RETURNING id`
-
-	err := pool.QueryRow(context.Background(), query,
+	err = pool.QueryRow(context.Background(), query,
 		budget.UserID,
 		budget.CategoryID,
 		budget.Amount,

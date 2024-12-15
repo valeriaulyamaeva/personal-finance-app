@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"golang.org/x/crypto/bcrypt"
 	"log"
 )
 
@@ -18,7 +17,7 @@ func main() {
 	defer pool.Close()
 
 	// Запуск миграции паролей
-	if err := hashPasswords(pool); err != nil {
+	if err := MigrateUsersToNotifications(pool); err != nil {
 		log.Fatalf("Ошибка при миграции паролей: %v", err)
 	}
 
@@ -26,37 +25,29 @@ func main() {
 }
 
 // Функция для хеширования паролей пользователей
-func hashPasswords(pool *pgxpool.Pool) error {
-	rows, err := pool.Query(context.Background(), "SELECT id, password FROM users")
+func MigrateUsersToNotifications(pool *pgxpool.Pool) error {
+	query := `
+		SELECT id 
+		FROM users`
+	rows, err := pool.Query(context.Background(), query)
 	if err != nil {
-		return fmt.Errorf("Ошибка при получении пользователей: %v", err)
+		return fmt.Errorf("ошибка при извлечении пользователей: %v", err)
 	}
 	defer rows.Close()
 
 	for rows.Next() {
-		var id int
-		var password string
-
-		if err := rows.Scan(&id, &password); err != nil {
-			return fmt.Errorf("Ошибка при сканировании пользователя: %v", err)
+		var userID int
+		if err := rows.Scan(&userID); err != nil {
+			return fmt.Errorf("ошибка при чтении пользователя: %v", err)
 		}
 
-		// Пропускаем пароли, которые уже хешированы
-		if len(password) == 60 {
-			continue
-		}
-
-		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+		notificationQuery := `
+			INSERT INTO notifications (user_id, message, is_read) 
+			VALUES ($1, $2, $3)`
+		_, err = pool.Exec(context.Background(), notificationQuery, userID, "Добро пожаловать в приложение!", false)
 		if err != nil {
-			return fmt.Errorf("Ошибка хеширования пароля: %v", err)
+			return fmt.Errorf("ошибка при создании уведомления для пользователя %d: %v", userID, err)
 		}
-
-		_, err = pool.Exec(context.Background(), "UPDATE users SET password = $1 WHERE id = $2", hashedPassword, id)
-		if err != nil {
-			return fmt.Errorf("Ошибка при обновлении пароля пользователя: %v", err)
-		}
-
-		log.Printf("Пароль для пользователя с ID %d успешно обновлен", id)
 	}
 
 	return nil

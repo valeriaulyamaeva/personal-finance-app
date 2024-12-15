@@ -85,23 +85,11 @@ func GetAllGoals(pool *pgxpool.Pool, userID int) ([]models.Goal, error) {
 	return goals, nil
 }
 
-// UpdateGoal обновляет информацию о цели
+// Функция для обновления цели в базе данных
 func UpdateGoal(pool *pgxpool.Pool, goal *models.Goal) error {
-	query := `
-		UPDATE goals 
-		SET amount = $1, current_amount = $2, target_date = $3, name = $4, status = $5 
-		WHERE id = $6`
-	_, err := pool.Exec(context.Background(), query,
-		goal.Amount,
-		goal.CurrentAmount,
-		goal.TargetDate,
-		goal.Name,
-		goal.Status,
-		goal.ID)
-	if err != nil {
-		return fmt.Errorf("ошибка обновления цели: %v", err)
-	}
-	return nil
+	// Запрос на обновление данных цели в базе
+	_, err := pool.Exec(context.Background(), "UPDATE goals SET amount = $1, currency = $2 WHERE id = $3", goal.Amount, goal.Currency, goal.ID)
+	return err
 }
 
 // DeleteGoal удаляет цель по ID

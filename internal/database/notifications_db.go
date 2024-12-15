@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/jackc/pgx/v5"
+	"log"
 	_ "time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -13,16 +14,16 @@ import (
 
 func CreateNotification(pool *pgxpool.Pool, notification *models.Notification) error {
 	query := `
-		INSERT INTO notifications (user_id, message, is_read) 
-		VALUES ($1, $2, $3) 
-		RETURNING id, created_at`
-
+		INSERT INTO notifications (user_id, message, is_read, datewhen) 
+		VALUES ($1, $2, $3, $4) 
+		RETURNING id`
 	err := pool.QueryRow(context.Background(), query,
 		notification.UserID,
 		notification.Message,
-		notification.IsRead).Scan(&notification.ID, &notification.CreatedAt)
+		notification.IsRead,
+		notification.DateWhen).Scan(&notification.ID)
 	if err != nil {
-		return fmt.Errorf("ошибка при добавлении уведомления: %v", err)
+		return fmt.Errorf("ошибка при создании уведомления: %v", err)
 	}
 	return nil
 }
@@ -118,5 +119,23 @@ func DeleteNotification(pool *pgxpool.Pool, notificationID int) error {
 	if result.RowsAffected() == 0 {
 		return fmt.Errorf("уведомление с ID %d не найдено", notificationID)
 	}
+	return nil
+}
+
+func DeleteNotificationByNotificationID(pool *pgxpool.Pool, notificationID int) error {
+	query := `DELETE FROM notifications WHERE id = $1`
+
+	// Выполнение запроса
+	result, err := pool.Exec(context.Background(), query, notificationID)
+	if err != nil {
+		log.Printf("Ошибка выполнения запроса: %v", err)
+		return fmt.Errorf("ошибка удаления уведомления: %v", err)
+	}
+
+	if result.RowsAffected() == 0 {
+		log.Printf("Уведомление с ID %d не найдено", notificationID)
+		return fmt.Errorf("уведомление с ID %d не найдено", notificationID)
+	}
+
 	return nil
 }

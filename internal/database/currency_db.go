@@ -84,43 +84,63 @@ func updateTransactionsCurrency(pool *pgxpool.Pool, userID int, newCurrency stri
 	return nil
 }
 
+// Обновление валюты для целей пользователя
 func updateGoalsCurrency(pool *pgxpool.Pool, userID int, newCurrency string) error {
-	goal, err := GetGoalByID(pool, userID)
+	// Получаем все цели пользователя
+	goals, err := GetGoalsByUserID(pool, userID)
 	if err != nil {
-		log.Printf("Ошибка при получении цели с ID %d: %v", userID, err)
+		log.Printf("Ошибка при получении целей пользователя с ID %d: %v", userID, err)
 		return fmt.Errorf("ошибка при получении целей пользователя: %v", err)
 	}
 
-	// Логирование перед конвертацией
-	log.Printf("Текущая валюта цели: %s, новая валюта: %s", goal.Currency, newCurrency)
+	// Обрабатываем каждую цель
+	for _, goal := range goals {
+		if goal.Currency != newCurrency {
+			// Конвертируем сумму цели, если валюта отличается
+			convertedAmount, err := utils.ConvertCurrency(goal.Amount, goal.Currency, newCurrency)
+			if err != nil {
+				log.Printf("Ошибка при конвертации суммы для цели с ID %d: %v", goal.ID, err)
+				return err
+			}
 
-	// Если валюта отличается, конвертируем
-	if goal.Currency != newCurrency {
-		convertedAmount, err := utils.ConvertCurrency(goal.Amount, goal.Currency, newCurrency)
-		if err != nil {
-			log.Printf("Ошибка при конвертации для цели с ID %d: %v", goal.ID, err)
-			return err
-		}
+			// Логируем конвертированную сумму
+			log.Printf("Цель с ID %d: сумма %.2f в валюте %s конвертирована в %.2f в валюте %s", goal.ID, goal.Amount, goal.Currency, convertedAmount, newCurrency)
 
-		// Обновляем цель в базе данных
-		if err := updateGoalAmountAndCurrency(pool, goal, convertedAmount, newCurrency); err != nil {
-			log.Printf("Ошибка при обновлении цели с ID %d: %v", goal.ID, err)
-			return fmt.Errorf("ошибка при обновлении цели с ID %d: %v", goal.ID, err)
+			// Обновляем цель в базе данных
+			goal.Amount = convertedAmount
+			goal.Currency = newCurrency
+			if err := UpdateGoal(pool, &goal); err != nil {
+				log.Printf("Ошибка при обновлении цели с ID %d: %v", goal.ID, err)
+				return fmt.Errorf("ошибка при обновлении цели с ID %d: %v", goal.ID, err)
+			}
 		}
 	}
 	return nil
 }
 
-// Вспомогательная функция для обновления цели
-func updateGoalAmountAndCurrency(pool *pgxpool.Pool, goal *models.Goal, newAmount float64, newCurrency string) error {
-	goal.Amount = newAmount
-	goal.Currency = newCurrency
-
-	// Обновляем цель в базе данных
-	if err := UpdateGoal(pool, goal); err != nil {
-		return fmt.Errorf("ошибка при обновлении цели с ID %d: %v", goal.ID, err)
+// Функция для получения целей пользователя из базы данных
+func GetGoalsByUserID(pool *pgxpool.Pool, userID int) ([]models.Goal, error) {
+	// Здесь запрос к базе для получения всех целей пользователя
+	var goals []models.Goal
+	query := "SELECT id, user_id, amount, currency, target_date FROM goals WHERE user_id = $1"
+	rows, err := pool.Query(context.Background(), query, userID)
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	defer rows.Close()
+
+	for rows.Next() {
+		var goal models.Goal
+		if err := rows.Scan(&goal.ID, &goal.UserID, &goal.Amount, &goal.Currency, &goal.TargetDate); err != nil {
+			return nil, err
+		}
+		goals = append(goals, goal)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return goals, nil
 }
 
 func GetUserSettings(pool *pgxpool.Pool, userID int) (*models.UserSettings, error) {
